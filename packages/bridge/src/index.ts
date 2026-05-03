@@ -14,7 +14,7 @@ import { PerformanceTracker } from './core/performance';
 import { OperationInterceptor } from './core/interceptor';
 import { SubscriptionTracker } from './core/subscription-tracker';
 import { NotificationMonitor } from './core/notification-monitor';
-import { wrapApolloClient } from './adapters/graphql';
+import { wrapRestClient, interceptWebSocketFrames } from './adapters/rest';
 
 const MAX_GETTER_TRACES = 200;
 const MAX_SUB_UPDATES = 500;
@@ -23,7 +23,7 @@ const MAX_LANGUAGES = 100;
 let nextGetterTraceId = 1;
 
 /**
- * Initialize the AD4M DevTools bridge for GraphQL/Apollo transport.
+ * Initialize the AD4M DevTools bridge for REST + WebSocket transport.
  * 
  * Call this from the Ad4mClient constructor:
  * ```typescript
@@ -31,7 +31,7 @@ let nextGetterTraceId = 1;
  * initDevToolsBridge(this);
  * ```
  * 
- * @param client - The Ad4mClient instance (must have #apolloClient accessible)
+ * @param client - The Ad4mClient instance (REST-based, with optional WebSocket RPC)
  */
 export function initDevToolsBridge(client: any): void {
   if (typeof globalThis === 'undefined') return;
@@ -57,24 +57,24 @@ export function initDevToolsBridge(client: any): void {
 
   const connectionState = () => {
     const activeClient = getClient();
-    // For GraphQL/Apollo, connection info comes from the Apollo link/transport
-    const url = activeClient?.executorUrl || activeClient?.baseUrl || '';
+    const url = activeClient?.baseUrl || activeClient?.executorUrl || '';
     const authenticated = Boolean(activeClient?.hasAuthToken || activeClient?.authenticated);
+    const activeEventStreams = Number(activeClient?.activeEventStreams || 0);
 
     return {
       connected: Boolean(activeClient),
-      transport: 'graphql' as const,
+      transport: 'rest' as const,
       url,
       authenticated,
-      eventStreamConnected: subscriptions.getActiveCount() > 0,
-      activeEventStreams: subscriptions.getActiveCount(),
+      eventStreamConnected: activeEventStreams > 0,
+      activeEventStreams,
     };
   };
 
   const enrichErrors = (errors?: any[]): ErrorDetail[] | undefined =>
     errors?.map(e => ({
       message: e?.message || String(e),
-      type: e?.type || e?.name || e?.constructor?.name || (e?.extensions?.code ? `GraphQL: ${e.extensions.code}` : 'Error'),
+      type: e?.type || e?.name || e?.constructor?.name || (e?.status ? `HTTP ${e.status}` : 'Error'),
       stack: e?.stack,
       nested: e?.networkError
         ? [{
@@ -236,19 +236,22 @@ export function initDevToolsBridge(client: any): void {
     (globalThis as any).window.__AD4M_DEVTOOLS__ = devtools;
   }
 
-  // Attempt to wrap the Apollo client link chain
-  // The Ad4mClient stores it as a private field — we need to access it
-  // via the client reference passed in
+  // Wrap the REST client to intercept HTTP and WebSocket calls
   try {
-    // Try to get the apollo client — it may be a private field
-    const apolloClient = client._apolloClient || client.apolloClient;
-    if (apolloClient) {
-      wrapApolloClient(apolloClient, devtools);
+    const restClient = client._restClient || client.restClient;
+    if (restClient) {
+      wrapRestClient(restClient, devtools);
+
+      // If WebSocket is already connected, intercept frames
+      const ws = restClient._ws || restClient.ws;
+      if (ws) {
+        interceptWebSocketFrames(ws, devtools);
+      }
     }
   } catch {
-    // Apollo client not accessible — bridge will still work via manual instrumentation
+    // RestClient not accessible — bridge will still work via manual instrumentation
   }
 }
 
-export { createDevToolsLink, wrapApolloClient } from './adapters/graphql';
+export { wrapRestClient, interceptWebSocketFrames } from './adapters/rest';
 export type { AD4MDevTools, DevToolsState, OperationRecord, SubscriptionRecord, SubscriptionUpdateRecord, NotificationRecord, PerformanceState, GetterTraceRecord, LanguageRecord, ErrorDetail } from './core/types';
