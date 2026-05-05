@@ -1,0 +1,427 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "ad4mDir",
+      "type": "promptString",
+      "description": "AD4M repo path",
+      "default": "${workspaceFolder}/../ad4m"
+    },
+    {
+      "id": "fluxDir",
+      "type": "promptString",
+      "description": "Flux repo path",
+      "default": "${workspaceFolder}/../flux"
+    },
+    {
+      "id": "seedFile",
+      "type": "promptString",
+      "description": "Seed JSON file path (or leave empty for no seed)",
+      "default": ""
+    },
+    {
+      "id": "gqlPort",
+      "type": "promptString",
+      "description": "GraphQL port",
+      "default": "12000"
+    },
+    {
+      "id": "fluxPort",
+      "type": "promptString",
+      "description": "Flux preview port",
+      "default": "3030"
+    },
+    {
+      "id": "adminCredential",
+      "type": "promptString",
+      "description": "Admin credential",
+      "default": "test123"
+    },
+    {
+      "id": "weDir",
+      "type": "promptString",
+      "description": "WE repo path",
+      "default": "${workspaceFolder}/../we"
+    },
+    {
+      "id": "wePort",
+      "type": "promptString",
+      "description": "WE preview port",
+      "default": "3000"
+    },
+    {
+      "id": "whisperModel",
+      "type": "pickString",
+      "description": "Whisper model variant",
+      "options": [
+        "whisper_tiny_quantized",
+        "whisper_tiny",
+        "whisper_small",
+        "whisper_small_en",
+        "whisper_medium_en",
+        "whisper_distil_large_v3",
+        "whisper_large_v3_turbo_quantized"
+      ],
+      "default": "whisper_small"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "AD4M + Flux: Full Rebuild (SDK + Executor + Flux)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-rebuild.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--flux", "${input:fluxDir}",
+        "--executor"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Builds: core → connect → hooks → executor (Rust) → Flux"
+    },
+    {
+      "label": "AD4M + Flux: Rebuild SDK + Flux (no executor)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-rebuild.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--flux", "${input:fluxDir}"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Builds: core → connect → hooks → Flux (skips Rust executor)"
+    },
+    {
+      "label": "AD4M + Flux: Rebuild SDK Only",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-rebuild.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Builds: core → connect → hooks (no Flux)"
+    },
+    {
+      "label": "AD4M + Flux: Launch (Fresh + Flux Mock Seed + Auth)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--flux", "${input:fluxDir}",
+        "--generate-seed",
+        "--fresh",
+        "--headless-auth"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Kill existing → fresh data → generate mock community/channels/messages → Flux → browser auth"
+    },
+    {
+      "label": "AD4M + Flux: Launch (Fresh + Seed + Auth)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--flux", "${input:fluxDir}",
+        "--seed", "${input:seedFile}",
+        "--fresh",
+        "--headless-auth"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Kill existing → fresh data → executor (multi-user) → create user → seed → Flux → browser auth"
+    },
+    {
+      "label": "AD4M + Flux: Launch (Fresh + Seed, Manual Login)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--flux", "${input:fluxDir}",
+        "--seed", "${input:seedFile}",
+        "--fresh"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Kill existing → fresh data → executor (multi-user) → create user → seed → Flux (login manually)"
+    },
+    {
+      "label": "AD4M + Flux: Launch (Resume, No Seed)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--flux", "${input:fluxDir}",
+        "--no-seed"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Resume existing data → executor (multi-user) → Flux (no re-seed)"
+    },
+    {
+      "label": "AD4M + Flux: Launch Executor Only (Fresh + Seed)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--seed", "${input:seedFile}",
+        "--fresh",
+        "--no-flux"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Executor only in multi-user mode, no Flux serve"
+    },
+    {
+      "label": "AD4M: Browser Auth (Multi-User JWT)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-browser-auth.sh",
+      "args": [
+        "--executor-url", "http://127.0.0.1:${input:gqlPort}",
+        "--flux-url", "http://localhost:${input:fluxPort}",
+        "--flux-dir", "${input:fluxDir}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Create user, login via GraphQL, inject JWT into browser, create Flux profile"
+    },
+    {
+      "label": "AD4M: Auth (CDP - UCAN Capability Flow)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-connect-auth.sh",
+      "args": [
+        "--admin-credential", "${input:adminCredential}",
+        "--flux-url", "http://localhost:${input:fluxPort}",
+        "--executor-url", "http://127.0.0.1:${input:gqlPort}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "ad4m-connect shadow DOM auth via Chrome DevTools Protocol"
+    },
+    {
+      "label": "AD4M: Seed Perspective",
+      "type": "shell",
+      "command": "python3",
+      "args": [
+        "${workspaceFolder}/scripts/ad4m-perspective-tool.py",
+        "--url", "http://127.0.0.1:${input:gqlPort}/graphql",
+        "--auth", "${input:adminCredential}",
+        "import",
+        "${input:seedFile}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Import a JSON perspective snapshot into the running executor"
+    },
+    {
+      "label": "AD4M: Verify REST Endpoints",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-rest-verify.sh",
+      "args": [
+        "--url", "http://127.0.0.1:${input:gqlPort}",
+        "--admin", "${input:adminCredential}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Verify all AD4M REST API endpoints are responding correctly"
+    },
+    {
+      "label": "AD4M: Type Check (ts-rs vs SDK)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-type-check.sh",
+      "args": [
+        "--repo", "${input:ad4mDir}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Verify ts-rs generated types match SDK expectations"
+    },
+    {
+      "label": "AD4M: Setup Transcription Model",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-transcription-setup.sh",
+      "args": [
+        "--model", "${input:whisperModel}",
+        "--gql-port", "${input:gqlPort}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Register Whisper model + pre-download weights into running executor"
+    },
+    {
+      "label": "AD4M: Setup Transcription Model (no preload)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-transcription-setup.sh",
+      "args": [
+        "--model", "${input:whisperModel}",
+        "--gql-port", "${input:gqlPort}",
+        "--no-preload"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Register Whisper model only (download happens on first use)"
+    },
+    {
+      "label": "AD4M: Setup Both Transcription Models (Flux)",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "${workspaceFolder}/scripts/ad4m-transcription-setup.sh --model whisper_small --gql-port ${input:gqlPort} && ${workspaceFolder}/scripts/ad4m-transcription-setup.sh --model whisper_tiny_quantized --gql-port ${input:gqlPort}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Register both Whisper + Whisper tiny quantized (required by Flux)"
+    },
+    {
+      "label": "AD4M + WE: Launch (Fresh + Auth)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-we-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--we", "${input:weDir}",
+        "--fresh",
+        "--headless-auth"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Kill existing → fresh data → executor (multi-user) → create user → WE (build+preview) → browser auth"
+    },
+    {
+      "label": "AD4M + WE: Launch (Fresh, Manual Login)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-we-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--we", "${input:weDir}",
+        "--fresh"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Kill existing → fresh data → executor (multi-user) → create user → WE (login manually)"
+    },
+    {
+      "label": "AD4M + WE: Launch Dev (Fresh + Auth)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-we-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--we", "${input:weDir}",
+        "--fresh",
+        "--headless-auth",
+        "--dev"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Kill existing → fresh data → executor (multi-user) → create user → WE (vite dev with HMR) → browser auth"
+    },
+    {
+      "label": "AD4M: Kill All (executor + Flux/WE tmux)",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "tmux kill-session -t ad4m 2>/dev/null; tmux kill-session -t flux 2>/dev/null; tmux kill-session -t we 2>/dev/null; pkill -9 -f ad4m-executor 2>/dev/null; echo '✓ All AD4M processes stopped'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": [],
+      "detail": "Kill executor, Flux, WE, and tmux sessions"
+    },
+    {
+      "label": "AD4M: Tail Executor Logs",
+      "type": "shell",
+      "command": "tail",
+      "args": ["-f", "/tmp/ad4m-executor.log"],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "detail": "Tail the executor log file (useful for security codes)"
+    }
+  ]
+}
