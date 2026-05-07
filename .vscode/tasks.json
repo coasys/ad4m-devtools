@@ -22,7 +22,7 @@
     {
       "id": "gqlPort",
       "type": "promptString",
-      "description": "GraphQL port",
+      "description": "Executor port",
       "default": "12000"
     },
     {
@@ -223,24 +223,7 @@
         "clear": true
       },
       "problemMatcher": [],
-      "detail": "Create user, login via GraphQL, inject JWT into browser, create Flux profile"
-    },
-    {
-      "label": "AD4M: Auth (CDP - UCAN Capability Flow)",
-      "type": "shell",
-      "command": "${workspaceFolder}/scripts/ad4m-connect-auth.sh",
-      "args": [
-        "--admin-credential", "${input:adminCredential}",
-        "--flux-url", "http://localhost:${input:fluxPort}",
-        "--executor-url", "http://127.0.0.1:${input:gqlPort}"
-      ],
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true
-      },
-      "problemMatcher": [],
-      "detail": "ad4m-connect shadow DOM auth via Chrome DevTools Protocol"
+      "detail": "Create user, login via WS RPC, inject JWT into browser, create Flux profile"
     },
     {
       "label": "AD4M: Seed Perspective",
@@ -248,7 +231,7 @@
       "command": "python3",
       "args": [
         "${workspaceFolder}/scripts/ad4m-perspective-tool.py",
-        "--url", "http://127.0.0.1:${input:gqlPort}/graphql",
+        "--url", "ws://127.0.0.1:${input:gqlPort}/api/v1/ws",
         "--auth", "${input:adminCredential}",
         "import",
         "${input:seedFile}"
@@ -260,22 +243,6 @@
       },
       "problemMatcher": [],
       "detail": "Import a JSON perspective snapshot into the running executor"
-    },
-    {
-      "label": "AD4M: Verify REST Endpoints",
-      "type": "shell",
-      "command": "${workspaceFolder}/scripts/ad4m-rest-verify.sh",
-      "args": [
-        "--url", "http://127.0.0.1:${input:gqlPort}",
-        "--admin", "${input:adminCredential}"
-      ],
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true
-      },
-      "problemMatcher": [],
-      "detail": "Verify all AD4M REST API endpoints are responding correctly"
     },
     {
       "label": "AD4M: Type Check (ts-rs vs SDK)",
@@ -298,7 +265,7 @@
       "command": "${workspaceFolder}/scripts/ad4m-transcription-setup.sh",
       "args": [
         "--model", "${input:whisperModel}",
-        "--gql-port", "${input:gqlPort}"
+        "--port", "${input:gqlPort}"
       ],
       "presentation": {
         "reveal": "always",
@@ -314,7 +281,7 @@
       "command": "${workspaceFolder}/scripts/ad4m-transcription-setup.sh",
       "args": [
         "--model", "${input:whisperModel}",
-        "--gql-port", "${input:gqlPort}",
+        "--port", "${input:gqlPort}",
         "--no-preload"
       ],
       "presentation": {
@@ -331,7 +298,7 @@
       "command": "bash",
       "args": [
         "-c",
-        "${workspaceFolder}/scripts/ad4m-transcription-setup.sh --model whisper_small --gql-port ${input:gqlPort} && ${workspaceFolder}/scripts/ad4m-transcription-setup.sh --model whisper_tiny_quantized --gql-port ${input:gqlPort}"
+        "${workspaceFolder}/scripts/ad4m-transcription-setup.sh --model whisper_small --port ${input:gqlPort} && ${workspaceFolder}/scripts/ad4m-transcription-setup.sh --model whisper_tiny_quantized --port ${input:gqlPort}"
       ],
       "presentation": {
         "reveal": "always",

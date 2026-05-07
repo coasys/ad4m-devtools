@@ -72,30 +72,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 API_PORT=$(echo "$EXECUTOR_URL" | grep -oE '[0-9]+$')
-REST_BASE="$EXECUTOR_URL/api/v1"
-GQL_URL="$EXECUTOR_URL/graphql"
+WS_URL="ws://127.0.0.1:${API_PORT}/api/v1/ws"
+HEALTH_URL="$EXECUTOR_URL/health"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_RPC="$SCRIPT_DIR/ad4m-ws-rpc.py"
 
-# --- Auto-detect API mode (REST preferred, GQL fallback) ---
-USE_REST=false
-if curl -sf "$REST_BASE/agent/status" -H "authorization: $ADMIN_CREDENTIAL" 2>/dev/null | grep -q '"isInitialized"'; then
-    USE_REST=true
-elif curl -sf -X POST "$GQL_URL" -H "Content-Type: application/json" -H "authorization: $ADMIN_CREDENTIAL" \
-     -d '{"query":"{ agentStatus { isInitialized } }"}' 2>/dev/null | grep -q '"isInitialized"'; then
-    USE_REST=false
-else
-    err "Executor not ready (tried REST and GraphQL)"
+# --- Check executor is ready ---
+if ! curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
+    err "Executor not ready (health check failed at $HEALTH_URL)"
 fi
 
-# Connection URL for ad4m-connect localStorage injection
-if $USE_REST; then
-    # REST: ad4m-connect uses HTTP URL
-    CONNECT_URL="$EXECUTOR_URL"
-    ok "Executor running (REST)"
-else
-    # GraphQL: ad4m-connect uses WebSocket URL
-    CONNECT_URL="ws://127.0.0.1:${API_PORT}/graphql"
-    ok "Executor running (GraphQL)"
-fi
+# Connection URL for ad4m-connect localStorage injection (HTTP base — ad4m-connect derives WS internally)
+CONNECT_URL="$EXECUTOR_URL"
+ok "Executor running (WebSocket RPC)"
 
 # --- Step 2: Verify Flux ---
 log "Checking Flux..."
@@ -105,132 +94,62 @@ ok "Flux serving"
 # --- Step 3: Create test user ---
 if ! $SKIP_CREATE_USER; then
     log "Ensuring test user exists: $EMAIL"
-    if $USE_REST; then
-        curl -sf -X POST "$REST_BASE/users" \
-            -H "Content-Type: application/json" \
-            -H "authorization: $ADMIN_CREDENTIAL" \
-            -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" >/dev/null 2>&1
-    else
-        curl -sf -X POST "$GQL_URL" \
-            -H "Content-Type: application/json" \
-            -H "authorization: $ADMIN_CREDENTIAL" \
-            -d "{\"query\":\"mutation { runtimeCreateUser(email: \\\"$EMAIL\\\", password: \\\"$PASSWORD\\\") { success } }\"}" >/dev/null 2>&1
-    fi
+    python3 "$WS_RPC" --url "$WS_URL" --token "$ADMIN_CREDENTIAL" \
+        "user.create" "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" >/dev/null 2>&1 || true
     ok "User ready"
 fi
 
 # --- Step 4: Get user JWT ---
 log "Logging in as $EMAIL..."
-if $USE_REST; then
-    USER_JWT=$(curl -sf -X POST "$REST_BASE/users/login" \
-        -H "Content-Type: application/json" \
-        -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" 2>/dev/null \
-        | python3 -c "import sys,json; print(json.load(sys.stdin))" 2>/dev/null) || USER_JWT=""
-else
-    USER_JWT=$(curl -sf -X POST "$GQL_URL" \
-        -H "Content-Type: application/json" \
-        -d "{\"query\":\"mutation { runtimeLoginUser(email: \\\"$EMAIL\\\", password: \\\"$PASSWORD\\\") }\"}" \
-        | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['runtimeLoginUser'])" 2>/dev/null) || USER_JWT=""
-fi
+USER_JWT=$(python3 "$WS_RPC" --url "$WS_URL" --token "$ADMIN_CREDENTIAL" \
+    "user.login" "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" 2>/dev/null \
+    | python3 -c "import sys,json; r=json.load(sys.stdin); print(r if isinstance(r,str) else '')" 2>/dev/null) || USER_JWT=""
+USER_JWT=$(echo "$USER_JWT" | sed 's/^"//;s/"$//')
 [[ -n "$USER_JWT" ]] || err "Login failed for $EMAIL"
 ok "JWT obtained (${#USER_JWT} chars)"
 
 # --- Step 4b: Ensure Flux profile exists ---
 # Check if profile already has flux://profile links
-if $USE_REST; then
-    PROFILE_LINKS=$(curl -sf "$REST_BASE/agent" \
-        -H "Authorization: $USER_JWT" \
-        | python3 -c "
+PROFILE_LINKS=$(python3 "$WS_RPC" --url "$WS_URL" --token "$USER_JWT" "agent.get" 2>/dev/null \
+    | python3 -c "
 import sys,json
 try:
-    links = json.load(sys.stdin)['perspective']['links']
+    agent = json.load(sys.stdin)
+    links = agent.get('perspective',{}).get('links',[])
     flux = [l for l in links if l.get('data',{}).get('source','').startswith('flux://')]
     print(len(flux))
-except: print('0')" 2>/dev/null)
-else
-    PROFILE_LINKS=$(curl -sf -X POST "$GQL_URL" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: $USER_JWT" \
-        -d '{"query":"{ agent { perspective { links { data { source } } } } }"}' \
-        | python3 -c "
-import sys,json
-try:
-    links = json.load(sys.stdin)['data']['agent']['perspective']['links']
-    flux = [l for l in links if l['data']['source'].startswith('flux://')]
-    print(len(flux))
-except: print('0')" 2>/dev/null)
-fi
+except: print('0')" 2>/dev/null) || PROFILE_LINKS="0"
 
 if [[ "$PROFILE_LINKS" == "0" ]]; then
-    if $USE_REST; then
-        log "Creating Flux profile via REST..."
-        PROFILE_RESULT=$(python3 << PROFILE_EOF
-import json, urllib.request, sys
+    log "Creating Flux profile via WS RPC..."
+    PROFILE_RESULT=$(python3 << PROFILE_EOF
+import asyncio, json, sys, uuid
+import websockets
 
-rest_base = "$REST_BASE"
-jwt = "$USER_JWT"
+ws_url = "$WS_URL"
+token = "$USER_JWT"
 
-def rest(method, path, body=None):
-    url = rest_base + path
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, method=method,
-        headers={"Content-Type": "application/json", "Authorization": jwt})
-    with urllib.request.urlopen(req) as r:
-        text = r.read().decode()
-        return json.loads(text) if text else None
+async def ws_rpc(operation, params=None):
+    url = f"{ws_url}?token={token}"
+    async with websockets.connect(url) as ws:
+        req_id = str(uuid.uuid4())
+        await ws.send(json.dumps({"id": req_id, "type": operation, "params": params or {}}))
+        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
+        if "error" in resp and resp["error"] is not None:
+            raise RuntimeError(f"WS RPC error: {resp['error']}")
+        return resp.get("result", resp)
 
 try:
-    r = rest("POST", "/expressions", {"content": '"TestUser"', "languageAddress": "literal"})
-    exp_url = r
-    agent = rest("GET", "/agent")
+    # Create expression
+    exp_url = asyncio.run(ws_rpc("expression.create", {
+        "content": '"TestUser"',
+        "languageAddress": "literal"
+    }))
+    # Get agent DID
+    agent = asyncio.run(ws_rpc("agent.get"))
     did = agent["did"]
-    rest("PATCH", "/agent/profile", {
-        "publicPerspective": {
-            "links": [{
-                "author": did,
-                "timestamp": "2026-01-01T00:00:00Z",
-                "data": {
-                    "source": "flux://profile",
-                    "predicate": "sioc://has_username",
-                    "target": exp_url
-                },
-                "proof": {"key": "", "signature": ""}
-            }]
-        }
-    })
-    print("ok")
-except Exception as e:
-    print(f"fail: {e}", file=sys.stderr)
-    sys.exit(1)
-PROFILE_EOF
-        )
-    else
-        log "Creating Flux profile via GraphQL..."
-        PROFILE_RESULT=$(python3 << PROFILE_EOF
-import json, urllib.request, sys
-
-gql_url = "$GQL_URL"
-jwt = "$USER_JWT"
-
-def gql(query, variables=None):
-    body = {"query": query}
-    if variables:
-        body["variables"] = variables
-    req = urllib.request.Request(gql_url,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Authorization": jwt})
-    with urllib.request.urlopen(req) as r:
-        return json.loads(r.read())
-
-try:
-    r = gql('mutation { expressionCreate(content: "\\\\"TestUser\\\\"", languageAddress: "literal") }')
-    exp_url = r["data"]["expressionCreate"]
-    r = gql('{ agent { did } }')
-    did = r["data"]["agent"]["did"]
-    query = '''mutation(\$perspective: PerspectiveInput!) {
-        agentUpdatePublicPerspective(perspective: \$perspective) { did }
-    }'''
-    variables = {
+    # Update profile
+    asyncio.run(ws_rpc("agent.updateProfile", {
         "perspective": {
             "links": [{
                 "author": did,
@@ -243,15 +162,13 @@ try:
                 "proof": {"key": "", "signature": ""}
             }]
         }
-    }
-    gql(query, variables)
+    }))
     print("ok")
 except Exception as e:
     print(f"fail: {e}", file=sys.stderr)
     sys.exit(1)
 PROFILE_EOF
-        )
-    fi
+    )
     if [[ "$PROFILE_RESULT" == "ok" ]]; then
         ok "Flux profile created"
     else
@@ -391,7 +308,7 @@ fi
 # --- Step 9: Inject auth + create profile ---
 log "Injecting auth and setting up Flux..."
 
-python3 - "$CDP_PORT" "$FLUX_URL" "$CONNECT_URL" "$USER_JWT" "$CONNECT_VERSION" "$API_PORT" "$USE_REST" << 'PYEOF'
+python3 - "$CDP_PORT" "$FLUX_URL" "$CONNECT_URL" "$USER_JWT" "$CONNECT_VERSION" "$API_PORT" << 'PYEOF'
 import asyncio, json, sys, time, urllib.request
 import websockets
 
@@ -401,7 +318,6 @@ CONNECT_URL    = sys.argv[3]
 USER_JWT       = sys.argv[4]
 CONNECT_VER    = sys.argv[5]
 API_PORT       = sys.argv[6]
-USE_REST       = sys.argv[7] == "true"
 CDP            = f"http://127.0.0.1:{CDP_PORT}"
 T0             = time.monotonic()
 
@@ -501,7 +417,7 @@ async def run():
 
         # ── Step B: Always inject fresh credentials ──
         # (Chrome profile may persist stale JWT from a previous executor run)
-        print(f"  [{elapsed()}] Injecting auth credentials ({'REST' if USE_REST else 'GQL'})...")
+        print(f"  [{elapsed()}] Injecting auth credentials...")
 
         # First: clear ALL ad4m-related localStorage entries (stale keys from
         # other ad4m-connect versions would cause InvalidSignature errors)
@@ -537,39 +453,22 @@ async def run():
             print(f"  [{elapsed()}] Runtime version differs: {runtime_ver} (detected from package: {CONNECT_VER})")
             versions_to_set.append(runtime_ver)
 
-        if USE_REST:
-            # REST mode: ad4m-connect uses HTTP URL + port
-            for ver in versions_to_set:
-                await js(f"""
-                    (function() {{
-                        localStorage.setItem('{ver}/ad4m-token', '{USER_JWT}');
-                        localStorage.setItem('{ver}/ad4m-url', '{CONNECT_URL}');
-                        localStorage.setItem('{ver}/ad4m-port', '{API_PORT}');
-                        localStorage.setItem('{ver}/ad4m-last-host', JSON.stringify({{
-                            id: 'injected-' + Date.now(),
-                            url: '{CONNECT_URL}',
-                            name: '127.0.0.1',
-                            location: 'Custom URL'
-                        }}));
-                        return 'ok';
-                    }})()
-                """)
-        else:
-            # GQL mode: ad4m-connect uses WebSocket URL
-            for ver in versions_to_set:
-                await js(f"""
-                    (function() {{
-                        localStorage.setItem('{ver}/ad4m-token', '{USER_JWT}');
-                        localStorage.setItem('{ver}/ad4m-url', '{CONNECT_URL}');
-                        localStorage.setItem('{ver}/ad4m-last-host', JSON.stringify({{
-                            id: 'injected-' + Date.now(),
-                            url: '{CONNECT_URL}',
-                            name: '127.0.0.1',
-                            location: 'Custom URL'
-                        }}));
-                        return 'ok';
-                    }})()
-                """)
+        # Inject token + URL + port + last-host for each version
+        for ver in versions_to_set:
+            await js(f"""
+                (function() {{
+                    localStorage.setItem('{ver}/ad4m-token', '{USER_JWT}');
+                    localStorage.setItem('{ver}/ad4m-url', '{CONNECT_URL}');
+                    localStorage.setItem('{ver}/ad4m-port', '{API_PORT}');
+                    localStorage.setItem('{ver}/ad4m-last-host', JSON.stringify({{
+                        id: 'injected-' + Date.now(),
+                        url: '{CONNECT_URL}',
+                        name: '127.0.0.1',
+                        location: 'Custom URL'
+                    }}));
+                    return 'ok';
+                }})()
+            """)
         print(f"  [{elapsed()}] Injected credentials for versions: {versions_to_set}")
         print(f"  [{elapsed()}] Credentials injected -- reloading...")
 
@@ -636,35 +535,20 @@ async def run():
         if other_versions:
             print(f"  [{elapsed()}] Re-injecting credentials for runtime versions: {other_versions}")
             for ver in other_versions:
-                if USE_REST:
-                    await js(f"""
-                        (function() {{
-                            localStorage.setItem('{ver}/ad4m-token', '{USER_JWT}');
-                            localStorage.setItem('{ver}/ad4m-url', '{CONNECT_URL}');
-                            localStorage.setItem('{ver}/ad4m-port', '{API_PORT}');
-                            localStorage.setItem('{ver}/ad4m-last-host', JSON.stringify({{
-                                id: 'injected-' + Date.now(),
-                                url: '{CONNECT_URL}',
-                                name: '127.0.0.1',
-                                location: 'Custom URL'
-                            }}));
-                            return 'ok';
-                        }})()
-                    """)
-                else:
-                    await js(f"""
-                        (function() {{
-                            localStorage.setItem('{ver}/ad4m-token', '{USER_JWT}');
-                            localStorage.setItem('{ver}/ad4m-url', '{CONNECT_URL}');
-                            localStorage.setItem('{ver}/ad4m-last-host', JSON.stringify({{
-                                id: 'injected-' + Date.now(),
-                                url: '{CONNECT_URL}',
-                                name: '127.0.0.1',
-                                location: 'Custom URL'
-                            }}));
-                            return 'ok';
-                        }})()
-                    """)
+                await js(f"""
+                    (function() {{
+                        localStorage.setItem('{ver}/ad4m-token', '{USER_JWT}');
+                        localStorage.setItem('{ver}/ad4m-url', '{CONNECT_URL}');
+                        localStorage.setItem('{ver}/ad4m-port', '{API_PORT}');
+                        localStorage.setItem('{ver}/ad4m-last-host', JSON.stringify({{
+                            id: 'injected-' + Date.now(),
+                            url: '{CONNECT_URL}',
+                            name: '127.0.0.1',
+                            location: 'Custom URL'
+                        }}));
+                        return 'ok';
+                    }})()
+                """)
             # Reload again with correct credentials
             print(f"  [{elapsed()}] Reloading with corrected version...")
             await send("Page.navigate", {"url": FLUX_URL})
@@ -679,11 +563,7 @@ async def run():
         fetch_check = await js(f"""
             (async function() {{
                 try {{
-                    var r = await fetch('{http_url}/graphql', {{
-                        method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify({{query: '{{ __typename }}' }})
-                    }});
+                    var r = await fetch('{http_url}/health');
                     var d = await r.json();
                     return JSON.stringify({{ok: true, status: r.status, data: d}});
                 }} catch(e) {{

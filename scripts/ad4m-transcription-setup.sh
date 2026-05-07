@@ -12,7 +12,7 @@
 #
 # Options:
 #   --model NAME       Whisper model variant (default: whisper_small)
-#   --gql-port PORT    Executor GraphQL port (default: 12000)
+#   --port PORT        Executor port (default: 12000)
 #   --credential CRED  Admin credential (default: test123)
 #   --data-path DIR    Executor data dir, for reading cached JWT (default: /tmp/ad4m-devtools)
 #   --no-preload       Skip pre-downloading the model weights
@@ -42,7 +42,7 @@ warn() { echo -e "\033[1;33m⚠ $1\033[0m" >&2; }
 
 # --- Defaults ---
 MODEL="whisper_small"
-GQL_PORT=12000
+PORT=12000
 CREDENTIAL="test123"
 DATA_PATH="/tmp/ad4m-devtools"
 PRELOAD=true
@@ -50,7 +50,7 @@ PRELOAD=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --model) [[ $# -ge 2 ]] || err "--model requires a name"; MODEL="$2"; shift 2;;
-        --gql-port) [[ $# -ge 2 ]] || err "--gql-port requires a port"; GQL_PORT="$2"; shift 2;;
+        --port) [[ $# -ge 2 ]] || err "--port requires a port"; PORT="$2"; shift 2;;
         --credential) [[ $# -ge 2 ]] || err "--credential requires a value"; CREDENTIAL="$2"; shift 2;;
         --data-path) [[ $# -ge 2 ]] || err "--data-path requires a directory"; DATA_PATH="$2"; shift 2;;
         --no-preload) PRELOAD=false; shift;;
@@ -59,7 +59,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-GQL_URL="http://127.0.0.1:${GQL_PORT}/graphql"
+WS_URL="ws://127.0.0.1:${PORT}/api/v1/ws"
+HEALTH_URL="http://127.0.0.1:${PORT}/health"
+TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_RPC="$TOOL_DIR/ad4m-ws-rpc.py"
+
+# --- Helper: WebSocket RPC call ---
+ws_rpc() {
+    python3 "$WS_RPC" --url "$WS_URL" --token "${1}" "${2}" ${3:+"$3"}
+}
 
 # --- Validate model name ---
 VALID_MODELS=(
@@ -89,22 +97,10 @@ case "$MODEL" in
         DISPLAY_NAME="Whisper" ;;
 esac
 
-# --- Helper: GraphQL query ---
-gql() {
-    local auth="$1"
-    local body="$2"
-    curl -sf -X POST "$GQL_URL" \
-        -H "Content-Type: application/json" \
-        -H "authorization: ${auth}" \
-        -d "$body" 2>&1
-}
-
 # --- Check executor is running ---
-log "Checking executor on port $GQL_PORT..."
-if ! curl -sf "$GQL_URL" -H "Content-Type: application/json" \
-    -H "authorization: $CREDENTIAL" \
-    -d '{"query":"{ agentStatus { isInitialized } }"}' >/dev/null 2>&1; then
-    err "Executor not responding on port $GQL_PORT. Start it first."
+log "Checking executor on port $PORT..."
+if ! curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
+    err "Executor not responding on port $PORT. Start it first."
 fi
 ok "Executor is running"
 
@@ -122,11 +118,13 @@ AUTH="${USER_JWT:-$CREDENTIAL}"
 log "Registering model: $MODEL (type: Transcription)..."
 
 # Check if already registered
-EXISTING=$(gql "$CREDENTIAL" '{"query":"{ aiGetModels { name modelType local { fileName } } }"}')
+EXISTING=$(ws_rpc "$CREDENTIAL" "ai.getModels")
 ALREADY_REGISTERED=$(echo "$EXISTING" | python3 -c "
 import sys, json
 try:
-    models = json.load(sys.stdin)['data']['aiGetModels']
+    models = json.load(sys.stdin)
+    if not isinstance(models, list):
+        models = models.get('models', [])
     found = any(m.get('local',{}).get('fileName') == '$MODEL' and m.get('modelType') == 'TRANSCRIPTION' for m in models)
     print(found)
 except:
@@ -135,39 +133,39 @@ except:
 
 if [[ "$ALREADY_REGISTERED" == "True" ]]; then
     ok "Model '$MODEL' already registered"
-    # Get existing model ID
     MODEL_ID=$(echo "$EXISTING" | python3 -c "
 import sys, json
-models = json.load(sys.stdin)['data']['aiGetModels']
+models = json.load(sys.stdin)
+if not isinstance(models, list):
+    models = models.get('models', [])
 for m in models:
     if m.get('local',{}).get('fileName') == '$MODEL' and m.get('modelType') == 'TRANSCRIPTION':
         print(m.get('id', '$MODEL'))
         break
 " 2>/dev/null) || MODEL_ID="$MODEL"
 else
-    ADD_BODY=$(python3 -c "
+    ADD_PARAMS=$(python3 -c "
 import json
-body = {
-    'query': 'mutation(\$model: ModelInput!) { aiAddModel(model: \$model) }',
-    'variables': {
-        'model': {
-            'name': '$DISPLAY_NAME',
-            'modelType': 'TRANSCRIPTION',
-            'local': {'fileName': '$MODEL'}
-        }
+params = {
+    'model': {
+        'name': '$DISPLAY_NAME',
+        'modelType': 'TRANSCRIPTION',
+        'local': {'fileName': '$MODEL'}
     }
 }
-print(json.dumps(body))
+print(json.dumps(params))
 ")
-    ADD_RESULT=$(gql "$CREDENTIAL" "$ADD_BODY")
-
+    ADD_RESULT=$(ws_rpc "$CREDENTIAL" "ai.addModel" "$ADD_PARAMS")
     MODEL_ID=$(echo "$ADD_RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-if 'errors' in data:
-    print('ERROR: ' + data['errors'][0]['message'], file=sys.stderr)
+if isinstance(data, str):
+    print(data)
+elif isinstance(data, dict) and 'error' in data:
+    print('ERROR: ' + str(data['error']), file=sys.stderr)
     sys.exit(1)
-print(data['data']['aiAddModel'])
+else:
+    print(data)
 " 2>/dev/null) || err "Failed to register model: $ADD_RESULT"
 
     ok "Model registered: $MODEL_ID"
@@ -177,14 +175,17 @@ fi
 # 2. Set host rate (required even if billing inactive, for safety)
 # ==========================================================================
 log "Setting host rate for $MODEL..."
-RATE_BODY=$(python3 -c "
+RATE_PARAMS=$(python3 -c "
 import json
-rates = json.dumps([{'description': '$MODEL', 'priceInHOT': 0.001}])
-body = {'query': 'mutation { runtimeSetHostRates(ratesJson: ' + json.dumps(rates) + ') }'}
-print(json.dumps(body))
+params = {'ratesJson': json.dumps([{'description': '$MODEL', 'priceInHOT': 0.001}])}
+print(json.dumps(params))
 ")
-RATE_RESULT=$(gql "$CREDENTIAL" "$RATE_BODY")
-RATE_OK=$(echo "$RATE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('runtimeSetHostRates', False))" 2>/dev/null) || RATE_OK="false"
+RATE_RESULT=$(ws_rpc "$CREDENTIAL" "runtime.setHostRates" "$RATE_PARAMS")
+RATE_OK=$(echo "$RATE_RESULT" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data if isinstance(data, bool) else bool(data))
+" 2>/dev/null) || RATE_OK="false"
 if [[ "$RATE_OK" == "True" || "$RATE_OK" == "true" ]]; then
     ok "Host rate set for $MODEL"
 else
@@ -197,26 +198,27 @@ fi
 if $PRELOAD; then
     log "Pre-downloading $MODEL weights (this may take a while on first run)..."
 
-    # We need a valid user JWT to open a transcription stream
     if [[ -z "$USER_JWT" ]]; then
         warn "No user JWT found — trying admin credential for preload"
         AUTH="$CREDENTIAL"
     fi
 
     # Open a stream — this triggers the model download
-    OPEN_BODY=$(python3 -c "
+    OPEN_PARAMS=$(python3 -c "
 import json
-body = {'query': 'mutation { aiOpenTranscriptionStream(modelId: \"$MODEL\") }'}
-print(json.dumps(body))
+print(json.dumps({'modelId': '$MODEL'}))
 ")
-    OPEN_RESULT=$(gql "$AUTH" "$OPEN_BODY")
+    OPEN_RESULT=$(ws_rpc "$AUTH" "ai.openTranscriptionStream" "$OPEN_PARAMS")
     STREAM_ID=$(echo "$OPEN_RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-if 'errors' in data:
-    print('ERROR: ' + data['errors'][0]['message'], file=sys.stderr)
+if isinstance(data, str):
+    print(data)
+elif isinstance(data, dict) and 'error' in data:
+    print('ERROR: ' + str(data['error']), file=sys.stderr)
     sys.exit(1)
-print(data['data']['aiOpenTranscriptionStream'])
+else:
+    print(data)
 " 2>/dev/null)
 
     if [[ $? -ne 0 || -z "$STREAM_ID" || "$STREAM_ID" == "null" ]]; then
@@ -226,12 +228,11 @@ print(data['data']['aiOpenTranscriptionStream'])
         ok "Model loaded (stream $STREAM_ID)"
 
         # Close the stream immediately
-        CLOSE_BODY=$(python3 -c "
+        CLOSE_PARAMS=$(python3 -c "
 import json
-body = {'query': 'mutation { aiCloseTranscriptionStream(streamId: \"$STREAM_ID\") }'}
-print(json.dumps(body))
+print(json.dumps({'streamId': '$STREAM_ID'}))
 ")
-        CLOSE_RESULT=$(gql "$AUTH" "$CLOSE_BODY")
+        ws_rpc "$AUTH" "ai.closeTranscriptionStream" "$CLOSE_PARAMS" >/dev/null 2>&1
         ok "Preload stream closed"
     fi
 fi
@@ -246,9 +247,6 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "  Model:    $MODEL"
 echo "  Model ID: ${MODEL_ID:-$MODEL}"
-echo "  Port:     $GQL_PORT"
+echo "  Port:     $PORT"
 echo "  Preload:  $PRELOAD"
-echo ""
-echo "  Use in app:"
-echo "    aiOpenTranscriptionStream(modelId: \"$MODEL\")"
 echo ""

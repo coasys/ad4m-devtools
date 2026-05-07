@@ -87,8 +87,6 @@ fi
 log "Building AD4M core ($AD4M_DIR/core)..."
 cd "$AD4M_DIR/core"
 pnpm exec tsc
-# buildSchema only exists on GraphQL branches; skip silently if missing
-pnpm run buildSchema >/dev/null 2>&1 || true
 pnpm run bundle
 ok "AD4M core built"
 

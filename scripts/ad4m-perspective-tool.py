@@ -2,105 +2,65 @@
 """
 ad4m-perspective-tool — Import and export AD4M perspectives as JSON snapshots.
 
+All operations use WebSocket RPC (ws://host:port/api/v1/ws).
+
 Usage:
-  Export:  ad4m-perspective-tool export <uuid> [--output <file>] [--url <gql_url>] [--auth <credential>]
-  Import:  ad4m-perspective-tool import <file> [--name <name>] [--url <gql_url>] [--auth <credential>]
+  Export:  ad4m-perspective-tool export <uuid> [--output <file>] [--url <ws_url>] [--auth <credential>]
+  Import:  ad4m-perspective-tool import <file> [--name <name>] [--url <ws_url>] [--auth <credential>]
 
 Examples:
   ad4m-perspective-tool export fdc3f69d-... --output snapshot.json
   ad4m-perspective-tool import snapshot.json --name "Test Community"
-  ad4m-perspective-tool import snapshot.json --url http://localhost:12000/graphql --auth test123
+  ad4m-perspective-tool import snapshot.json --url ws://127.0.0.1:12000/api/v1/ws --auth test123
 """
 
 import argparse
+import asyncio
 import json
 import sys
 import time
-import urllib.request
+import uuid as uuid_mod
 
-DEFAULT_URL = "http://127.0.0.1:12000/graphql"
+try:
+    import websockets
+except ImportError:
+    print("Error: 'websockets' package required. Install: pip3 install websockets", file=sys.stderr)
+    sys.exit(2)
+
+DEFAULT_URL = "ws://127.0.0.1:12000/api/v1/ws"
 DEFAULT_AUTH = "test123"
 BATCH_SIZE = 500
 
 
-def gql(url, auth, query, variables=None):
-    body = json.dumps({"query": query, "variables": variables or {}}).encode()
-    req = urllib.request.Request(url, body, {
-        "Content-Type": "application/json",
-        "authorization": auth,
-    })
-    resp = urllib.request.urlopen(req)
-    data = json.loads(resp.read())
-    if data.get("errors"):
-        raise Exception(f"GraphQL error: {json.dumps(data['errors'], indent=2)}")
-    return data["data"]
-
-
-def rest_request(base_url, auth, method, path, body=None):
-    """Make a REST API request. Returns parsed JSON."""
-    url = f"{base_url}{path}"
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data, {
-        "Content-Type": "application/json",
-        "authorization": auth,
-    })
-    req.method = method
-    resp = urllib.request.urlopen(req)
-    raw = resp.read()
-    if not raw:
-        return None
-    return json.loads(raw)
+async def ws_rpc(url, auth, operation, params=None):
+    """Make a single WebSocket RPC call."""
+    ws_url = f"{url}?token={auth}" if "?" not in url else f"{url}&token={auth}"
+    async with websockets.connect(ws_url) as ws:
+        req_id = str(uuid_mod.uuid4())
+        msg = {"id": req_id, "type": operation, "params": params or {}}
+        await ws.send(json.dumps(msg))
+        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
+        if "error" in resp and resp["error"] is not None:
+            raise RuntimeError(f"WS RPC error ({operation}): {resp['error']}")
+        return resp.get("result", resp)
 
 
 def cmd_export(args):
     uuid = args.uuid
 
     # Get perspective metadata
-    meta = gql(args.url, args.auth, """
-        query($uuid: String!) {
-            perspective(uuid: $uuid) {
-                uuid name sharedUrl state
-                neighbourhood {
-                    author
-                    data {
-                        linkLanguage
-                        meta {
-                            links {
-                                author timestamp
-                                data { source predicate target }
-                                proof { valid signature key }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    """, {"uuid": uuid})
-
-    perspective = meta.get("perspective")
+    perspective = asyncio.run(ws_rpc(args.url, args.auth, "perspective.get", {"uuid": uuid}))
     if not perspective:
         print(f"Error: Perspective {uuid} not found", file=sys.stderr)
         sys.exit(1)
 
     # Get all links via snapshot
-    snap = gql(args.url, args.auth, """
-        query($uuid: String!) {
-            perspectiveSnapshot(uuid: $uuid) {
-                links {
-                    author timestamp
-                    data { source predicate target }
-                    proof { signature key }
-                    status
-                }
-            }
-        }
-    """, {"uuid": uuid})
-
-    links = snap.get("perspectiveSnapshot", {}).get("links", [])
+    snapshot = asyncio.run(ws_rpc(args.url, args.auth, "perspective.snapshot", {"uuid": uuid}))
+    links = snapshot.get("links", []) if isinstance(snapshot, dict) else snapshot
 
     export = {
-        "uuid": perspective["uuid"],
-        "name": perspective["name"],
+        "uuid": perspective.get("uuid", uuid),
+        "name": perspective.get("name", ""),
         "sharedUrl": perspective.get("sharedUrl"),
         "state": perspective.get("state"),
         "neighbourhood": perspective.get("neighbourhood"),
@@ -118,19 +78,22 @@ def cmd_export(args):
         print(json_str)
 
 
-def cmd_import_rest(args, name, links):
-    """Import a perspective using REST API instead of GraphQL."""
-    base_url = args.url
+def cmd_import(args):
+    with open(args.file) as f:
+        snap = json.load(f)
 
-    # Create perspective: POST /perspectives
-    result = rest_request(base_url, args.auth, "POST", "/perspectives", {"name": name})
-    uuid = result["uuid"]
+    name = args.name or snap.get("name") or "Imported Perspective"
+    links = snap.get("links", [])
 
-    print(f"\033[32mCreated perspective: {uuid}\033[0m", file=sys.stderr)
+    # Create perspective
+    result = asyncio.run(ws_rpc(args.url, args.auth, "perspective.create", {"name": name}))
+    p_uuid = result["uuid"]
+
+    print(f"\033[32mCreated perspective: {p_uuid}\033[0m", file=sys.stderr)
     print(f"Name: {name}", file=sys.stderr)
     print(f"Links to import: {len(links)}", file=sys.stderr)
 
-    # Bulk add links in batches: POST /perspectives/:uuid/links/bulk
+    # Bulk add links in batches
     total = len(links)
     start = time.time()
 
@@ -145,66 +108,10 @@ def cmd_import_rest(args, name, links):
                 "target": d["target"],
             })
 
-        rest_request(base_url, args.auth, "POST",
-                     f"/perspectives/{uuid}/links/bulk",
-                     {"links": link_inputs})
-
-        done = min(i + BATCH_SIZE, total)
-        elapsed = time.time() - start
-        rate = done / elapsed if elapsed > 0 else 0
-        print(f"\r  Added {done}/{total} links ({rate:.0f} links/s)", end="", file=sys.stderr)
-
-    elapsed = time.time() - start
-    print(file=sys.stderr)
-    print(f"\n\033[32m✅ Imported {total} links in {elapsed:.1f}s (REST)\033[0m", file=sys.stderr)
-    print(f"Perspective UUID: {uuid}", file=sys.stderr)
-
-    # Print UUID to stdout for scripting
-    print(uuid)
-
-
-def cmd_import(args):
-    with open(args.file) as f:
-        snap = json.load(f)
-
-    name = args.name or snap.get("name") or "Imported Perspective"
-    links = snap.get("links", [])
-
-    if args.rest:
-        return cmd_import_rest(args, name, links)
-
-    # Create perspective
-    result = gql(args.url, args.auth,
-        'mutation($n:String!){perspectiveAdd(name:$n){uuid name}}',
-        {"n": name})
-    uuid = result["perspectiveAdd"]["uuid"]
-
-    print(f"\033[32mCreated perspective: {uuid}\033[0m", file=sys.stderr)
-    print(f"Name: {name}", file=sys.stderr)
-    print(f"Links to import: {len(links)}", file=sys.stderr)
-
-    # Bulk add links in batches
-    total = len(links)
-    start = time.time()
-
-    for i in range(0, total, BATCH_SIZE):
-        batch = links[i:i + BATCH_SIZE]
-        link_inputs = []
-        for l in batch:
-            d = l.get("data", l)  # Support both {data: {source,target}} and flat {source,target}
-            link_inputs.append({
-                "source": d["source"],
-                "predicate": d.get("predicate", ""),
-                "target": d["target"],
-            })
-
-        gql(args.url, args.auth, '''
-            mutation($uuid:String!, $links:[LinkInput!]!) {
-                perspectiveAddLinks(uuid:$uuid, links:$links) {
-                    author timestamp data { source predicate target }
-                }
-            }
-        ''', {"uuid": uuid, "links": link_inputs})
+        asyncio.run(ws_rpc(args.url, args.auth, "perspective.addLinks", {
+            "uuid": p_uuid,
+            "links": link_inputs,
+        }))
 
         done = min(i + BATCH_SIZE, total)
         elapsed = time.time() - start
@@ -214,21 +121,24 @@ def cmd_import(args):
     elapsed = time.time() - start
     print(file=sys.stderr)
     print(f"\n\033[32m✅ Imported {total} links in {elapsed:.1f}s\033[0m", file=sys.stderr)
-    print(f"Perspective UUID: {uuid}", file=sys.stderr)
+    print(f"Perspective UUID: {p_uuid}", file=sys.stderr)
 
     # Print UUID to stdout for scripting
-    print(uuid)
+    print(p_uuid)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Import and export AD4M perspectives as JSON snapshots")
+        description="Import and export AD4M perspectives as JSON snapshots (WebSocket RPC)")
     parser.add_argument("--url", default=DEFAULT_URL,
-                       help=f"GraphQL endpoint or REST base URL (default: {DEFAULT_URL})")
+                       help=f"WebSocket RPC endpoint (default: {DEFAULT_URL})")
     parser.add_argument("--auth", default=DEFAULT_AUTH,
                        help="Admin credential or JWT")
+    # Legacy flags (ignored, WS is the only mode now)
+    parser.add_argument("--ws", action="store_true", default=True,
+                       help=argparse.SUPPRESS)
     parser.add_argument("--rest", action="store_true",
-                       help="Use REST API instead of GraphQL")
+                       help=argparse.SUPPRESS)
 
     sub = parser.add_subparsers(dest="command", required=True)
 

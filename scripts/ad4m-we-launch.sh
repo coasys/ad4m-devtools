@@ -12,7 +12,7 @@
 #   --ad4m DIR             AD4M repo root (for finding executor binary)
 #   --we DIR               WE repo root (default: ./we)
 #   --data-path DIR        Executor data path (default: /tmp/ad4m-devtools)
-#   --gql-port PORT        GraphQL port (default: 12000)
+#   --port PORT             Executor port (default: 12000)
 #   --credential CRED      Admin credential (default: test123)
 #   --passphrase PASS      Agent passphrase (default: test)
 #   --we-port PORT         WE preview port (default: 3000)
@@ -49,7 +49,7 @@ WE_DIR=""
 [[ -d "$DEFAULT_AD4M" ]] && AD4M_DIR="$DEFAULT_AD4M"
 [[ -d "$DEFAULT_WE/apps/we-web" ]] && WE_DIR="$DEFAULT_WE"
 DATA_PATH="/tmp/ad4m-devtools"
-GQL_PORT=12000
+PORT=12000
 CREDENTIAL="test123"
 PASSPHRASE="test"
 WE_PORT=3000
@@ -68,7 +68,7 @@ while [[ $# -gt 0 ]]; do
         --ad4m) [[ $# -ge 2 ]] || err "--ad4m requires a directory"; AD4M_DIR="$2"; shift 2;;
         --we) [[ $# -ge 2 ]] || err "--we requires a directory"; WE_DIR="$2"; shift 2;;
         --data-path) [[ $# -ge 2 ]] || err "--data-path requires a directory"; DATA_PATH="$2"; shift 2;;
-        --gql-port) [[ $# -ge 2 ]] || err "--gql-port requires a port"; GQL_PORT="$2"; shift 2;;
+        --port) [[ $# -ge 2 ]] || err "--port requires a port"; PORT="$2"; shift 2;;
         --credential) [[ $# -ge 2 ]] || err "--credential requires a value"; CREDENTIAL="$2"; shift 2;;
         --passphrase) [[ $# -ge 2 ]] || err "--passphrase requires a value"; PASSPHRASE="$2"; shift 2;;
         --we-port) [[ $# -ge 2 ]] || err "--we-port requires a port"; WE_PORT="$2"; shift 2;;
@@ -97,47 +97,22 @@ if [[ -z "$EXECUTOR_BIN" ]]; then
 fi
 [[ -x "$EXECUTOR_BIN" ]] || err "Executor not executable: $EXECUTOR_BIN"
 
-GQL_URL="http://127.0.0.1:${GQL_PORT}/graphql"
-REST_URL="http://127.0.0.1:${GQL_PORT}/api/v1"
+WS_URL="ws://127.0.0.1:${PORT}/api/v1/ws"
+HEALTH_URL="http://127.0.0.1:${PORT}/health"
+TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_RPC="$TOOL_DIR/ad4m-ws-rpc.py"
 
-# --- Helper: GraphQL query ---
-gql() {
-    curl -sf -X POST "$GQL_URL" \
-        -H "Content-Type: application/json" \
-        -H "authorization: ${1}" \
-        -d "$2" 2>&1
+# --- Helper: WebSocket RPC call ---
+# Usage: ws_rpc TOKEN OPERATION [JSON_PARAMS]
+ws_rpc() {
+    python3 "$WS_RPC" --url "$WS_URL" --token "${1}" "${2}" ${3:+"$3"}
 }
 
-# --- Helper: REST GET ---
-rest_get() {
-    curl -sf -X GET "${REST_URL}${2}" \
-        -H "Content-Type: application/json" \
-        -H "authorization: ${1}" 2>&1
-}
-
-# --- Helper: REST POST ---
-rest_post() {
-    curl -sf -X POST "${REST_URL}${2}" \
-        -H "Content-Type: application/json" \
-        -H "authorization: ${1}" \
-        -d "${3:-{}}" 2>&1
-}
-
-# --- Helper: Wait for API and detect REST vs GraphQL ---
-USE_REST=false
+# --- Helper: Wait for API (health endpoint) ---
 wait_for_api() {
     local elapsed=0
     while [[ $elapsed -lt 30 ]]; do
-        if curl -sf "${REST_URL}/agent/status" \
-            -H "authorization: $CREDENTIAL" >/dev/null 2>&1; then
-            USE_REST=true
-            return 0
-        fi
-        if curl -sf "$GQL_URL" \
-            -H "Content-Type: application/json" \
-            -H "authorization: $CREDENTIAL" \
-            -d '{"query":"{ agentStatus { isInitialized } }"}' >/dev/null 2>&1; then
-            USE_REST=false
+        if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -175,7 +150,7 @@ EXEC_ARGS=(
     run
     --admin-credential "$CREDENTIAL"
     --app-data-path "$DATA_PATH"
-    --gql-port "$GQL_PORT"
+    --port "$PORT"
 )
 $MULTI_USER && EXEC_ARGS+=(--enable-multi-user true)
 
@@ -195,55 +170,32 @@ else
 fi
 
 # ==========================================================================
-# 5. Wait for API (auto-detect REST vs GraphQL)
+# 5. Wait for API
 # ==========================================================================
 log "Waiting for API..."
 if ! wait_for_api; then
     err "API did not come up within 30s. Check logs: /tmp/ad4m-executor.log"
 fi
-if $USE_REST; then
-    ok "REST API ready on port $GQL_PORT"
-else
-    warn "REST not available — falling back to GraphQL on port $GQL_PORT"
-fi
+ok "API ready on port $PORT (WebSocket RPC)"
 
 # ==========================================================================
 # 6. Initialise agent
 # ==========================================================================
-if $USE_REST; then
-    AGENT_STATUS=$(rest_get "$CREDENTIAL" "/agent/status")
-    IS_INIT=$(echo "$AGENT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('isInitialized', False))" 2>/dev/null) || IS_INIT="False"
-    IS_UNLOCKED=$(echo "$AGENT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('isUnlocked', False))" 2>/dev/null) || IS_UNLOCKED="False"
+AGENT_STATUS=$(ws_rpc "$CREDENTIAL" "agent.status")
+IS_INIT=$(echo "$AGENT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('isInitialized', False))" 2>/dev/null) || IS_INIT="False"
+IS_UNLOCKED=$(echo "$AGENT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('isUnlocked', False))" 2>/dev/null) || IS_UNLOCKED="False"
 
-    if [[ "$IS_INIT" != "True" ]]; then
-        log "Generating agent..."
-        AGENT_RESULT=$(rest_post "$CREDENTIAL" "/agent/generate" "{\"passphrase\":\"$PASSPHRASE\"}")
-        DID=$(echo "$AGENT_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('did','unknown'))" 2>/dev/null) || DID="unknown"
-        ok "Agent generated: $DID"
-    elif [[ "$IS_UNLOCKED" != "True" ]]; then
-        log "Unlocking agent..."
-        rest_post "$CREDENTIAL" "/agent/unlock" "{\"passphrase\":\"$PASSPHRASE\",\"holochain\":true}" >/dev/null
-        ok "Agent unlocked"
-    else
-        ok "Agent already initialised and unlocked"
-    fi
+if [[ "$IS_INIT" != "True" ]]; then
+    log "Generating agent..."
+    AGENT_RESULT=$(ws_rpc "$CREDENTIAL" "agent.generate" "{\"passphrase\":\"$PASSPHRASE\"}")
+    DID=$(echo "$AGENT_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('did','unknown'))" 2>/dev/null) || DID="unknown"
+    ok "Agent generated: $DID"
+elif [[ "$IS_UNLOCKED" != "True" ]]; then
+    log "Unlocking agent..."
+    ws_rpc "$CREDENTIAL" "agent.unlock" "{\"passphrase\":\"$PASSPHRASE\"}" >/dev/null
+    ok "Agent unlocked"
 else
-    AGENT_STATUS=$(gql "$CREDENTIAL" '{"query":"{ agentStatus { isInitialized isUnlocked } }"}')
-    IS_INIT=$(echo "$AGENT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['agentStatus']['isInitialized'])" 2>/dev/null) || IS_INIT="False"
-    IS_UNLOCKED=$(echo "$AGENT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['agentStatus']['isUnlocked'])" 2>/dev/null) || IS_UNLOCKED="False"
-
-    if [[ "$IS_INIT" != "True" ]]; then
-        log "Generating agent..."
-        AGENT_RESULT=$(gql "$CREDENTIAL" "{\"query\":\"mutation { agentGenerate(passphrase: \\\"$PASSPHRASE\\\") { did isInitialized isUnlocked } }\"}")
-        DID=$(echo "$AGENT_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['agentGenerate']['did'])" 2>/dev/null) || DID="unknown"
-        ok "Agent generated: $DID"
-    elif [[ "$IS_UNLOCKED" != "True" ]]; then
-        log "Unlocking agent..."
-        gql "$CREDENTIAL" "{\"query\":\"mutation { agentUnlock(passphrase: \\\"$PASSPHRASE\\\", holochain: true) { did isUnlocked } }\"}" >/dev/null
-        ok "Agent unlocked"
-    else
-        ok "Agent already initialised and unlocked"
-    fi
+    ok "Agent already initialised and unlocked"
 fi
 
 # ==========================================================================
@@ -252,9 +204,8 @@ fi
 USER_JWT=""
 USER_DID=""
 if $MULTI_USER && [[ -n "$TEST_USER_EMAIL" ]]; then
-  if $USE_REST; then
-    log "Creating test user: $TEST_USER_EMAIL (REST)"
-    CREATE_RESULT=$(rest_post "$CREDENTIAL" "/users" "{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}") || CREATE_RESULT=""
+    log "Creating test user: $TEST_USER_EMAIL"
+    CREATE_RESULT=$(ws_rpc "$CREDENTIAL" "user.create" "{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}") || CREATE_RESULT=""
     CREATE_SUCCESS=$(echo "$CREATE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null) || CREATE_SUCCESS="False"
     CREATE_ERROR=$(echo "$CREATE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null) || CREATE_ERROR=""
 
@@ -264,14 +215,12 @@ if $MULTI_USER && [[ -n "$TEST_USER_EMAIL" ]]; then
         warn "User creation: $CREATE_ERROR (may already exist)"
     fi
 
-    rest_post "$CREDENTIAL" "/users/free-access" "{\"email\":\"$TEST_USER_EMAIL\",\"enabled\":true}" >/dev/null 2>&1
+    ws_rpc "$CREDENTIAL" "user.freeAccess" "{\"email\":\"$TEST_USER_EMAIL\",\"enabled\":true}" >/dev/null 2>&1
     ok "Free access enabled for $TEST_USER_EMAIL"
 
     log "Logging in as $TEST_USER_EMAIL..."
-    LOGIN_RESULT=$(curl -sf -X POST "${REST_URL}/users/login" \
-        -H "Content-Type: application/json" \
-        -d "{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}") || LOGIN_RESULT=""
-    USER_JWT=$(echo "$LOGIN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin))" 2>/dev/null) || USER_JWT="$LOGIN_RESULT"
+    LOGIN_RESULT=$(ws_rpc "$CREDENTIAL" "user.login" "{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}") || LOGIN_RESULT=""
+    USER_JWT=$(echo "$LOGIN_RESULT" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r if isinstance(r,str) else '')" 2>/dev/null) || USER_JWT=""
     USER_JWT=$(echo "$USER_JWT" | sed 's/^"//;s/"$//')
 
     if [[ -n "$USER_JWT" && "$USER_JWT" != "null" && "$USER_JWT" != "" ]]; then
@@ -279,42 +228,12 @@ if $MULTI_USER && [[ -n "$TEST_USER_EMAIL" ]]; then
         echo "$USER_JWT" > "$DATA_PATH/.user-jwt"
         echo "$TEST_USER_EMAIL" > "$DATA_PATH/.user-email"
 
-        DID_RESULT=$(rest_get "$USER_JWT" "/agent")
+        DID_RESULT=$(ws_rpc "$USER_JWT" "agent.get")
         USER_DID=$(echo "$DID_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('did',''))" 2>/dev/null) || USER_DID=""
         [[ -n "$USER_DID" && "$USER_DID" != "null" ]] && ok "User DID: $USER_DID"
     else
         warn "Login failed: $LOGIN_RESULT"
     fi
-  else
-    log "Creating test user: $TEST_USER_EMAIL"
-    CREATE_RESULT=$(gql "$CREDENTIAL" "{\"query\":\"mutation { runtimeCreateUser(email: \\\"$TEST_USER_EMAIL\\\", password: \\\"$TEST_USER_PASSWORD\\\") { did success error } }\"}")
-    CREATE_SUCCESS=$(echo "$CREATE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['runtimeCreateUser']['success'])" 2>/dev/null) || CREATE_SUCCESS="False"
-    CREATE_ERROR=$(echo "$CREATE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['runtimeCreateUser'].get('error',''))" 2>/dev/null) || CREATE_ERROR=""
-
-    if [[ "$CREATE_SUCCESS" == "True" ]]; then
-        ok "Test user created"
-    else
-        warn "User creation: $CREATE_ERROR (may already exist)"
-    fi
-
-    log "Logging in as $TEST_USER_EMAIL..."
-    LOGIN_RESULT=$(curl -sf -X POST "$GQL_URL" \
-        -H "Content-Type: application/json" \
-        -d "{\"query\":\"mutation { runtimeLoginUser(email: \\\"$TEST_USER_EMAIL\\\", password: \\\"$TEST_USER_PASSWORD\\\") }\"}")
-    USER_JWT=$(echo "$LOGIN_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['runtimeLoginUser'])" 2>/dev/null) || USER_JWT=""
-
-    if [[ -n "$USER_JWT" && "$USER_JWT" != "null" ]]; then
-        ok "Login successful (JWT ${#USER_JWT} chars)"
-        echo "$USER_JWT" > "$DATA_PATH/.user-jwt"
-        echo "$TEST_USER_EMAIL" > "$DATA_PATH/.user-email"
-
-        DID_RESULT=$(gql "$USER_JWT" '{"query":"{ agent { did } }"}')
-        USER_DID=$(echo "$DID_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['agent']['did'])" 2>/dev/null) || USER_DID=""
-        [[ -n "$USER_DID" && "$USER_DID" != "null" ]] && ok "User DID: $USER_DID"
-    else
-        warn "Login failed: $LOGIN_RESULT"
-    fi
-  fi
 fi
 
 # ==========================================================================
@@ -379,11 +298,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  AD4M + WE - Ready"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-if $USE_REST; then
-    echo "  API:        ${REST_URL} (REST)"
-else
-    echo "  API:        http://127.0.0.1:$GQL_PORT/graphql (GraphQL fallback)"
-fi
+echo "  API:        ws://127.0.0.1:$PORT/api/v1/ws (WebSocket RPC)"
 echo "  Credential: $CREDENTIAL"
 $MULTI_USER && echo "  Multi-user: enabled"
 if $USE_TMUX; then
@@ -412,7 +327,7 @@ if $HEADLESS_AUTH; then
     [[ -x "$AUTH_SCRIPT" ]] || err "Auth script not found: $AUTH_SCRIPT"
 
     AUTH_ARGS=(
-        --executor-url "http://127.0.0.1:${GQL_PORT}"
+        --executor-url "http://127.0.0.1:${PORT}"
         --flux-url "http://localhost:${WE_PORT}"
         --admin-credential "$CREDENTIAL"
         --executor-log /tmp/ad4m-executor.log
