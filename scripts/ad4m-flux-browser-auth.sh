@@ -50,6 +50,7 @@ CHROME_PROFILE="/tmp/chrome-ad4m-dev"
 CONNECT_VERSION=""
 FLUX_DIR=""
 [[ -d "./flux/app" ]] && FLUX_DIR="./flux"
+CHROME_LOG_FILE="/tmp/ad4m-chrome-launch.log"
 DO_LAUNCH=true
 SKIP_CREATE_USER=false
 
@@ -62,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --admin-credential) ADMIN_CREDENTIAL="$2"; shift 2;;
         --chrome-port) CDP_PORT="$2"; shift 2;;
         --chrome-profile) CHROME_PROFILE="$2"; shift 2;;
+        --chrome-log-file) CHROME_LOG_FILE="$2"; shift 2;;
         --connect-version) CONNECT_VERSION="$2"; shift 2;;
         --flux-dir) FLUX_DIR="$2"; shift 2;;
         --no-launch) DO_LAUNCH=false; shift;;
@@ -265,19 +267,83 @@ if $DO_LAUNCH; then
         fi
         [[ -n "$CHROME_BIN" ]] || err "Chrome not found"
 
-        "$CHROME_BIN" \
-            --remote-debugging-port="$CDP_PORT" \
-            --user-data-dir="$CHROME_PROFILE" \
-            --no-first-run \
-            --no-default-browser-check \
-            --remote-allow-origins='*' \
-            "about:blank" >/dev/null 2>&1 &
+        prepare_profile_permissions() {
+            local profile_dir="$1"
+            mkdir -p "$profile_dir/Default"
+            local prefs_file="$profile_dir/Default/Preferences"
+            if [[ ! -f "$prefs_file" ]]; then
+                cat > "$prefs_file" <<'PREFS'
+{}
+PREFS
+            fi
+
+            # Grant camera/microphone for localhost + 127.0.0.1 origins.
+            # Keep real devices (no fake media device flag).
+            python3 - <<PYEOF
+import json
+prefs_path = "$prefs_file"
+try:
+    with open(prefs_path, "r", encoding="utf-8") as f:
+        prefs = json.load(f)
+except (json.JSONDecodeError, FileNotFoundError):
+    prefs = {}
+
+profile = prefs.setdefault("profile", {})
+defaults = profile.setdefault("default_content_setting_values", {})
+defaults["media_stream_mic"] = 1
+defaults["media_stream_camera"] = 1
+
+cs = profile.setdefault("content_settings", {})
+exceptions = cs.setdefault("exceptions", {})
+mic = exceptions.setdefault("media_stream_mic", {})
+cam = exceptions.setdefault("media_stream_camera", {})
+
+patterns = [
+    "https://localhost,*",
+    "https://127.0.0.1,*",
+    "http://localhost,*",
+    "http://127.0.0.1,*",
+]
+for p in patterns:
+    mic[p] = {"setting": 1}
+    cam[p] = {"setting": 1}
+
+with open(prefs_path, "w", encoding="utf-8") as f:
+    json.dump(prefs, f)
+PYEOF
+        }
+
+        launch_chrome() {
+            local profile_dir="$1"
+            prepare_profile_permissions "$profile_dir"
+            "$CHROME_BIN" \
+                --remote-debugging-port="$CDP_PORT" \
+                --user-data-dir="$profile_dir" \
+                --no-first-run \
+                --no-default-browser-check \
+                --remote-allow-origins='*' \
+                --use-fake-ui-for-media-stream \
+                "about:blank" >>"$CHROME_LOG_FILE" 2>&1 &
+        }
+
+        : > "$CHROME_LOG_FILE"
+        launch_chrome "$CHROME_PROFILE"
 
         for i in $(seq 1 15); do
             curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 && break
             sleep 1
         done
-        curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 || err "Chrome didn't start"
+        if ! curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then
+            warn "Chrome launch failed with profile $CHROME_PROFILE, retrying with fresh profile"
+            CHROME_PROFILE="${CHROME_PROFILE}-fresh-${CDP_PORT}"
+            rm -rf "$CHROME_PROFILE"
+            launch_chrome "$CHROME_PROFILE"
+            for i in $(seq 1 15); do
+                curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 && break
+                sleep 1
+            done
+        fi
+        curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 || err "Chrome didn't start (see $CHROME_LOG_FILE)"
         ok "Chrome launched"
     fi
 else
