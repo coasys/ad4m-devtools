@@ -2,24 +2,38 @@ import { useState, useEffect } from 'preact/hooks';
 
 interface Props {
   languages: any[];
+  agentStatus?: any;
 }
 
-export function AgentTab({ languages }: Props) {
+export function AgentTab({ languages, agentStatus: passiveAgent }: Props) {
   const [agent, setAgent] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [liveLanguages, setLiveLanguages] = useState<any[]>([]);
   const [langLoading, setLangLoading] = useState(false);
 
+  // Show passively collected agent data when available
+  useEffect(() => {
+    if (passiveAgent && !agent) {
+      setAgent(passiveAgent);
+    }
+  }, [passiveAgent]);
+
   const load = () => {
     setLoading(true);
     const expr = `
-      window.__AD4M_DEVTOOLS__?._client?.agent?.status()
-        .then(s => JSON.stringify(s))
+      (async () => {
+        const dt = window.__AD4M_DEVTOOLS__;
+        if (!dt?.getAgentStatus) return null;
+        const status = await dt.getAgentStatus();
+        return JSON.stringify(status);
+      })()
     `;
     if (typeof chrome !== 'undefined' && chrome.devtools?.inspectedWindow) {
       chrome.devtools.inspectedWindow.eval(expr, (res: any, err: any) => {
         setLoading(false);
-        if (res) setAgent(JSON.parse(res));
+        if (res) {
+          try { setAgent(JSON.parse(res)); } catch {}
+        }
       });
     }
   };

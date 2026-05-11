@@ -1,6 +1,17 @@
-// Content script — bridge between page and devtools panel
-// No inline script injection needed — the panel polls via
-// chrome.devtools.inspectedWindow.eval() directly.
+// Content script — injects page-world websocket instrumentation and
+// forwards page events to extension runtime.
+
+function injectPageScript() {
+  try {
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('page-inject.js');
+    script.async = false;
+    script.onload = () => script.remove();
+    (document.head || document.documentElement).appendChild(script);
+  } catch {}
+}
+
+injectPageScript();
 
 // Forward any messages from the page to the extension background
 window.addEventListener('message', (event) => {

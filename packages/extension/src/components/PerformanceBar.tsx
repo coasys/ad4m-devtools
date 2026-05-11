@@ -20,8 +20,10 @@ export function PerformanceBar({ perf, connected }: Props) {
       <span class="perf-item">Subs: <b>{perf.activeSubscriptions}</b></span>
       <span class="perf-item">Evt/s: <b>{perf.eventStreamMessageRate}</b></span>
       <span class={`perf-item ${connected ? 'perf-ok' : 'perf-err'}`}>
-        REST: <b>{connected ? 'connected' : 'disconnected'}</b>
+        WS: <b>{connected ? 'connected' : 'disconnected'}</b>
       </span>
+      <span class="perf-item">WS Out: <b>{formatBytes(perf.totalWsSentBytes || 0)}</b></span>
+      <span class="perf-item">WS In: <b>{formatBytes(perf.totalWsReceivedBytes || 0)}</b></span>
       <span class="perf-item">Mem: <b>~{formatBytes(perf.estimatedMemory)}</b></span>
     </div>
   );

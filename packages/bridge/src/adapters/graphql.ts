@@ -1,5 +1,19 @@
 import type { OperationRecord } from '../core/types';
 
+// Ensure V8 captures enough frames to reach application code
+if (typeof Error.stackTraceLimit === 'number') {
+  Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
+}
+
+/** Capture a stack trace synchronously (before any async boundary). */
+function captureStack(): string {
+  const prev = Error.stackTraceLimit;
+  Error.stackTraceLimit = 50;
+  const err = new Error();
+  Error.stackTraceLimit = prev;
+  return (err.stack || '').split('\n').slice(3).join('\n');
+}
+
 /**
  * GraphQL/Apollo adapter for AD4M DevTools bridge.
  * 
@@ -119,6 +133,7 @@ export function createDevToolsLink(bridge: DevToolsBridge): ApolloLink {
       }
 
       // Queries and Mutations
+      const stackTrace = captureStack();
       const method = opType === 'mutation' ? 'POST' : 'POST'; // GraphQL always POST
       const opId = bridge.logOperation({
         type: 'request',
@@ -133,6 +148,7 @@ export function createDevToolsLink(bridge: DevToolsBridge): ApolloLink {
           variables: operation.variables,
           operationName: opName,
         },
+        stackTrace,
       });
 
       const observable = forward(operation);

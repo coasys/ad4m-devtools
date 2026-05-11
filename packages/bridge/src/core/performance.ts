@@ -15,6 +15,11 @@ export class PerformanceTracker {
   restRequestCount = 0;
   sparqlTraceCount = 0;
   prologRequestCount = 0;
+  totalWsSentBytes = 0;
+  totalWsReceivedBytes = 0;
+  wsFramesSent = 0;
+  wsFramesReceived = 0;
+  activeWebSockets = 0;
 
   recordRequest(duration: number, queryLanguage?: 'sparql' | 'prolog') {
     this.totalRequests++;
@@ -40,6 +45,20 @@ export class PerformanceTracker {
 
   recordEventStreamMessage() {
     this.eventStreamMessageTimestamps.push(Date.now());
+  }
+
+  recordWebSocketFrame(direction: 'in' | 'out', bytes: number) {
+    if (direction === 'out') {
+      this.totalWsSentBytes += bytes;
+      this.wsFramesSent += 1;
+    } else {
+      this.totalWsReceivedBytes += bytes;
+      this.wsFramesReceived += 1;
+    }
+  }
+
+  setActiveWebSockets(count: number) {
+    this.activeWebSockets = count;
   }
 
   private rateInWindow(timestamps: number[]): number {
@@ -69,6 +88,12 @@ export class PerformanceTracker {
       activeSubscriptions: 0, // filled by bridge
       subscriptionUpdateRate: Math.round(this.rateInWindow(this.subUpdateTimestamps) * 10) / 10,
       eventStreamMessageRate,
+      totalWsSentBytes: this.totalWsSentBytes,
+      totalWsReceivedBytes: this.totalWsReceivedBytes,
+      totalWsBytes: this.totalWsSentBytes + this.totalWsReceivedBytes,
+      wsFramesSent: this.wsFramesSent,
+      wsFramesReceived: this.wsFramesReceived,
+      activeWebSockets: this.activeWebSockets,
       estimatedMemory,
       totalQueries: this.totalRequests,
       queriesPerSecond: requestsPerSecond,

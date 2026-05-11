@@ -7,21 +7,37 @@ Chrome DevTools extension for real-time debugging of AD4M applications.
 This is a pnpm monorepo with two packages:
 
 - **`packages/extension`** — Chrome DevTools panel (Preact + Vite)
-- **`packages/bridge`** — Transport-aware instrumentation bridge
+- **`packages/bridge`** — WebSocket-first instrumentation bridge
 
-The extension is **transport-agnostic** — it reads from `window.__AD4M_DEVTOOLS__` state exposed by the bridge. The bridge adapters differ per AD4M transport:
+The extension reads from `window.__AD4M_DEVTOOLS__` state exposed by the bridge.
 
-| Branch | AD4M Branch | Transport |
-|--------|-------------|-----------|
-| `main` | `dev` | GraphQL / Apollo |
-| `feat/sse-to-websocket` | `feat/sse-to-websocket` | REST + WebSocket RPC |
-| `feat/sparql-1.2-cleanup` | `feat/sparql-1.2-cleanup` | GraphQL + SPARQL traces |
+Current bridge behavior on this branch:
+
+- WS-RPC request/response pairing (`id` correlation)
+- WebSocket event tracking (including subscription updates)
+- Multi-response subscription aggregation
+- Response period and byte metrics
+- Socket/frame counters and totals
+- Call stack capture on websocket operations/events
+
+The bridge supports two runtime modes:
+
+1. Integrated mode: app/SDK calls `initDevToolsBridge(client)`
+2. External mode: extension injects page-world websocket monitor via `initExternalWebSocketDevTools()`
 
 ## Development
 
 ```bash
 pnpm install
 pnpm build
+```
+
+## Testing
+
+```bash
+pnpm test          # workspace unit tests
+pnpm test:e2e      # build + Playwright integration tests
+pnpm test:all      # unit + e2e
 ```
 
 ### Extension
@@ -32,6 +48,8 @@ pnpm dev  # watch mode
 ```
 
 Load the `packages/extension/dist` directory as an unpacked Chrome extension.
+
+The extension injects `page-inject.js` into the page world to instrument `window.WebSocket` directly when needed.
 
 ### Bridge Integration
 
@@ -44,11 +62,17 @@ import { initDevToolsBridge } from '@ad4m-devtools/bridge';
 initDevToolsBridge(this);
 ```
 
+For extension-only fallback instrumentation in page context:
+
+```typescript
+import { initExternalWebSocketDevTools } from '@ad4m-devtools/bridge';
+
+initExternalWebSocketDevTools();
+```
+
 ## Branches
 
-- **`main`** — GraphQL/Apollo adapter (works with `coasys/ad4m` `dev` branch)
-- **`feat/sse-to-websocket`** — REST + WebSocket adapter (works with `coasys/ad4m` `feat/sse-to-websocket`)
-- **`feat/sparql-1.2-cleanup`** — GraphQL + SPARQL trace enrichment (works with `coasys/ad4m` `feat/sparql-1.2-cleanup`)
+- **`main`** — WebSocket-first bridge + external injection support
 
 ## License
 

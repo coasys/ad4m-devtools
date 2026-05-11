@@ -7,6 +7,9 @@ export interface OperationRecord {
   type: OperationType;
   transport: OperationTransport;
   operationName: string;
+  socketId?: string;
+  wsRequestId?: string;
+  requestId?: string;
   method?: string;
   path?: string;
   url?: string;
@@ -20,12 +23,29 @@ export interface OperationRecord {
   statusCode?: number;
   errors?: ErrorDetail[];
   startTime: number;
+  firstResponseAt?: number;
+  lastResponseAt?: number;
+  responsePeriodMs?: number;
+  responseCount?: number;
+  requestBytes?: number;
+  responseBytes?: number;
+  totalResponseBytes?: number;
+  totalBytes?: number;
+  responses?: any[];
   endTime?: number;
   duration?: number;
   payloadSize?: number;
   sparqlQuery?: string;
   sparqlResult?: any;
   stackTrace?: string;
+
+  // Semantic metadata (extracted from RPC params)
+  modelClassName?: string;
+  perspectiveUUID?: string;
+  rpcMethod?: string;         // e.g. "perspective.modelQuery"
+  queryFingerprint?: string;  // hash for dedup detection
+  dupCount?: number;          // how many times this exact query was seen
+  dupGroupId?: string;        // shared key for duplicate ops
 }
 
 export interface CompleteOperationOptions {
@@ -104,6 +124,12 @@ export interface PerformanceState {
   activeSubscriptions: number;
   subscriptionUpdateRate: number;
   eventStreamMessageRate: number;
+  totalWsSentBytes: number;
+  totalWsReceivedBytes: number;
+  totalWsBytes: number;
+  wsFramesSent: number;
+  wsFramesReceived: number;
+  activeWebSockets: number;
   estimatedMemory: number;
   // Legacy aliases kept for compatibility with older panel/export readers.
   totalQueries: number;
@@ -111,6 +137,14 @@ export interface PerformanceState {
   sparqlQueryCount: number;
   prologQueryCount: number;
   wsMessageRate: number;
+}
+
+export interface PerspectiveInfo {
+  uuid: string;
+  name: string;
+  neighbourhood?: any;
+  sharedUrl?: string;
+  state?: string;
 }
 
 export interface DevToolsState {
@@ -121,6 +155,8 @@ export interface DevToolsState {
   performance: PerformanceState;
   getterTraces: GetterTraceRecord[];
   languages: LanguageRecord[];
+  perspectives: PerspectiveInfo[];
+  agentStatus: any;
   connection: {
     connected: boolean;
     transport: 'rest' | 'graphql' | 'websocket';
@@ -128,6 +164,10 @@ export interface DevToolsState {
     authenticated: boolean;
     eventStreamConnected: boolean;
     activeEventStreams: number;
+    wsFramesSent?: number;
+    wsFramesReceived?: number;
+    wsSentBytes?: number;
+    wsReceivedBytes?: number;
   };
 }
 
@@ -138,7 +178,11 @@ export interface AD4MDevTools {
   logSparqlQuery(info: { query: string; modelName: string; perspectiveUUID: string }): void;
   logOperation(op: Partial<OperationRecord>): number;
   completeOperation(id: number, result: any, errors?: any[], options?: CompleteOperationOptions): void;
+  patchOperation?(id: number, patch: Partial<OperationRecord>): void;
+  getOperation?(id: number): OperationRecord | undefined;
   recordEventStreamMessage(): void;
+  recordWebSocketFrame?(direction: 'in' | 'out', bytes: number): void;
+  setActiveWebSockets?(count: number): void;
   registerNotification(notification: NotificationRecord): void;
   updateNotification(id: string, update: Partial<NotificationRecord>): void;
   logSubscriptionUpdate(update: SubscriptionUpdateRecord): void;
@@ -148,7 +192,12 @@ export interface AD4MDevTools {
   queryLinks(perspectiveId: string, filter?: { source?: string; predicate?: string; target?: string }): Promise<any[]>;
   getSubjectClasses(perspectiveId: string): Promise<any[]>;
   getLanguages(): Promise<any[]>;
+  getPerspectives(): Promise<any[]>;
+  getAgentStatus(): Promise<any>;
+  runQuery(perspectiveId: string, query: string): Promise<any>;
+  sendRpc?(method: string, params?: any): Promise<any>;
   _client?: any;
+  _Ad4mModel?: any;
   _version: string;
 }
 

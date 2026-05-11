@@ -17,6 +17,8 @@ interface DevToolsState {
   connection: any;
   getterTraces: any[];
   languages: any[];
+  perspectives: any[];
+  agentStatus: any;
 }
 
 const EMPTY_STATE: DevToolsState = {
@@ -45,7 +47,7 @@ const EMPTY_STATE: DevToolsState = {
   },
   connection: {
     connected: false,
-    transport: 'rest',
+    transport: 'websocket',
     url: '',
     authenticated: false,
     eventStreamConnected: false,
@@ -53,6 +55,8 @@ const EMPTY_STATE: DevToolsState = {
   },
   getterTraces: [],
   languages: [],
+  perspectives: [],
+  agentStatus: null,
 };
 
 function evalInPage(expr: string): Promise<any> {
@@ -171,7 +175,7 @@ export function App() {
       </div>
       <div class="tab-content">
         {tab === 'connection' && <ConnectionTab state={state} connected={connected} />}
-        {tab === 'perspectives' && <PerspectivesTab />}
+        {tab === 'perspectives' && <PerspectivesTab perspectives={state.perspectives || []} />}
         {tab === 'queries' && (
           <QueriesTab
             operations={state.operations}
@@ -181,7 +185,7 @@ export function App() {
           />
         )}
         {tab === 'notifications' && <NotificationsTab notifications={state.notifications} />}
-        {tab === 'agent' && <AgentTab languages={state.languages || []} />}
+        {tab === 'agent' && <AgentTab languages={state.languages || []} agentStatus={state.agentStatus} />}
       </div>
     </div>
   );

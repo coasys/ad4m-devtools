@@ -6,7 +6,7 @@ interface Props {
 }
 
 export function SparqlEditor({ perspectiveUUID }: Props) {
-  const [query, setQuery] = useState('SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 20');
+  const [query, setQuery] = useState('findall(X, triple(_, _, X), Xs)');
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -14,18 +14,17 @@ export function SparqlEditor({ perspectiveUUID }: Props) {
   const run = () => {
     setRunning(true);
     setError(null);
-    const escaped = query.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+    setResult(null);
+    const escaped = query.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/`/g, '\\`').replace(/\$/g, '\\$');
     const expr = `
       (async () => {
-        const client = window.__AD4M_DEVTOOLS__?._client;
-        if (!client) return JSON.stringify({ error: 'No client' });
-        const proxy = await client.perspective.byUUID('${perspectiveUUID}');
-        if (!proxy) return JSON.stringify({ error: 'Perspective not found' });
+        const dt = window.__AD4M_DEVTOOLS__;
+        if (!dt?.runQuery) return JSON.stringify({ error: 'No query method available' });
         try {
-          const r = await proxy.infer('${escaped}');
+          const r = await dt.runQuery('${perspectiveUUID}', '${escaped}');
           return JSON.stringify({ data: r });
         } catch(e) {
-          return JSON.stringify({ error: e.message });
+          return JSON.stringify({ error: e.message || String(e) });
         }
       })()
     `;
@@ -50,9 +49,10 @@ export function SparqlEditor({ perspectiveUUID }: Props) {
         onInput={(e) => setQuery((e.target as HTMLTextAreaElement).value)}
         rows={6}
         spellcheck={false}
+        placeholder="Enter a Prolog query..."
       />
       <button class="btn" onClick={run} disabled={running}>
-        {running ? 'Running...' : '▶ Execute'}
+        {running ? 'Running...' : '▶ Execute Query'}
       </button>
       {error && <div class="error-msg">{error}</div>}
       {result && <JsonViewer data={result} />}

@@ -45,6 +45,26 @@ async def ws_rpc(url, auth, operation, params=None):
         return resp.get("result", resp)
 
 
+async def ws_rpc_multi(url, auth, calls):
+    """Send multiple RPC calls over a single WebSocket connection.
+
+    calls: list of (operation, params) tuples
+    Returns list of results in the same order.
+    """
+    ws_url = f"{url}?token={auth}" if "?" not in url else f"{url}&token={auth}"
+    async with websockets.connect(ws_url, max_size=50 * 1024 * 1024) as ws:
+        results = []
+        for operation, params in calls:
+            req_id = str(uuid_mod.uuid4())
+            msg = {"id": req_id, "type": operation, "params": params or {}}
+            await ws.send(json.dumps(msg))
+            resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=120))
+            if "error" in resp and resp["error"] is not None:
+                raise RuntimeError(f"WS RPC error ({operation}): {resp['error']}")
+            results.append(resp.get("result", resp))
+        return results
+
+
 def cmd_export(args):
     uuid = args.uuid
 
@@ -93,34 +113,57 @@ def cmd_import(args):
     print(f"Name: {name}", file=sys.stderr)
     print(f"Links to import: {len(links)}", file=sys.stderr)
 
-    # Bulk add links in batches
+    # Use deferred batch API: links queue in memory (no disk I/O, no Prolog,
+    # no pubsub) until commitBatch persists everything at once.
     total = len(links)
     start = time.time()
 
-    for i in range(0, total, BATCH_SIZE):
-        batch = links[i:i + BATCH_SIZE]
-        link_inputs = []
-        for l in batch:
-            d = l.get("data", l)
-            link_inputs.append({
-                "source": d["source"],
-                "predicate": d.get("predicate", ""),
-                "target": d["target"],
+    async def _batch_import():
+        ws_url = f"{args.url}?token={args.auth}" if "?" not in args.url else f"{args.url}&token={args.auth}"
+        async with websockets.connect(ws_url, max_size=50 * 1024 * 1024) as ws:
+            async def rpc(op, params):
+                req_id = str(uuid_mod.uuid4())
+                await ws.send(json.dumps({"id": req_id, "type": op, "params": params}))
+                resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=120))
+                if "error" in resp and resp["error"] is not None:
+                    raise RuntimeError(f"WS RPC error ({op}): {resp['error']}")
+                return resp.get("result", resp)
+
+            # Start deferred batch
+            batch_id = await rpc("perspective.createBatch", {"uuid": p_uuid})
+
+            # Queue links in batches (all in memory, no I/O)
+            for i in range(0, total, BATCH_SIZE):
+                batch = links[i:i + BATCH_SIZE]
+                link_inputs = [{
+                    "source": (l.get("data") or l)["source"],
+                    "predicate": (l.get("data") or l).get("predicate", ""),
+                    "target": (l.get("data") or l)["target"],
+                } for l in batch]
+
+                await rpc("perspective.addLinks", {
+                    "uuid": p_uuid,
+                    "links": link_inputs,
+                    "batchId": batch_id,
+                })
+
+                done = min(i + BATCH_SIZE, total)
+                elapsed = time.time() - start
+                rate = done / elapsed if elapsed > 0 else 0
+                print(f"\r  Queued {done}/{total} links ({rate:.0f} links/s)", end="", file=sys.stderr)
+
+            # Commit: single atomic persist + Prolog + pubsub
+            print(f"\n  Committing...", end="", file=sys.stderr)
+            await rpc("perspective.commitBatch", {
+                "uuid": p_uuid,
+                "batchId": batch_id,
             })
 
-        asyncio.run(ws_rpc(args.url, args.auth, "perspective.addLinks", {
-            "uuid": p_uuid,
-            "links": link_inputs,
-        }))
-
-        done = min(i + BATCH_SIZE, total)
-        elapsed = time.time() - start
-        rate = done / elapsed if elapsed > 0 else 0
-        print(f"\r  Added {done}/{total} links ({rate:.0f} links/s)", end="", file=sys.stderr)
+    asyncio.run(_batch_import())
 
     elapsed = time.time() - start
     print(file=sys.stderr)
-    print(f"\n\033[32m✅ Imported {total} links in {elapsed:.1f}s\033[0m", file=sys.stderr)
+    print(f"\033[32m✅ Imported {total} links in {elapsed:.1f}s\033[0m", file=sys.stderr)
     print(f"Perspective UUID: {p_uuid}", file=sys.stderr)
 
     # Print UUID to stdout for scripting

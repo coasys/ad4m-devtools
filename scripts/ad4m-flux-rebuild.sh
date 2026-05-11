@@ -158,6 +158,9 @@ pkg.pnpm = pkg.pnpm || {};
 pkg.pnpm.overrides = pkg.pnpm.overrides || {};
 pkg.pnpm.overrides['@coasys/ad4m'] = 'link:./ad4m/core';
 pkg.pnpm.overrides['@coasys/ad4m-connect'] = 'link:./ad4m/connect';
+pkg.pnpm.overrides['@coasys/hooks-helpers'] = 'link:./ad4m/ad4m-hooks/helpers';
+pkg.pnpm.overrides['@coasys/ad4m-react-hooks'] = 'link:./ad4m/ad4m-hooks/react';
+pkg.pnpm.overrides['@coasys/ad4m-vue-hooks'] = 'link:./ad4m/ad4m-hooks/vue';
 require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n');
 "
 ok "Overrides set (temporary — will restore after build)"

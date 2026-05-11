@@ -4,3 +4,4 @@ dist/
 *.tgz
 .env
 .ad4m
+test-results

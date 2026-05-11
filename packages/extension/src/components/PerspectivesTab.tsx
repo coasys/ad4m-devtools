@@ -1,14 +1,18 @@
-import { useState } from 'preact/hooks';
+import { useState, useEffect } from 'preact/hooks';
 import { SparqlEditor } from './SparqlEditor';
 import { JsonViewer } from './JsonViewer';
 
-type DetailTab = 'sparql' | 'links' | 'subjectClasses';
+type DetailTab = 'query' | 'links' | 'subjectClasses';
 
-export function PerspectivesTab() {
+interface Props {
+  perspectives: any[];
+}
+
+export function PerspectivesTab({ perspectives: passivePerspectives }: Props) {
   const [perspectives, setPerspectives] = useState<any[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [detailTab, setDetailTab] = useState<DetailTab>('sparql');
+  const [detailTab, setDetailTab] = useState<DetailTab>('query');
 
   // Links state
   const [links, setLinks] = useState<any[]>([]);
@@ -21,16 +25,29 @@ export function PerspectivesTab() {
   const [subjectClasses, setSubjectClasses] = useState<any[]>([]);
   const [scLoading, setScLoading] = useState(false);
 
+  // Show passively collected perspectives when available
+  useEffect(() => {
+    if (passivePerspectives.length > 0 && perspectives.length === 0) {
+      setPerspectives(passivePerspectives);
+    }
+  }, [passivePerspectives]);
+
   const loadPerspectives = () => {
     setLoading(true);
     const expr = `
-      window.__AD4M_DEVTOOLS__?._client?.perspective?.all()
-        .then(ps => JSON.stringify(ps.map(p => ({ uuid: p.uuid, name: p.name, neighbourhood: p.neighbourhood }))))
+      (async () => {
+        const dt = window.__AD4M_DEVTOOLS__;
+        if (!dt?.getPerspectives) return null;
+        const ps = await dt.getPerspectives();
+        return JSON.stringify(ps);
+      })()
     `;
     if (typeof chrome !== 'undefined' && chrome.devtools?.inspectedWindow) {
       chrome.devtools.inspectedWindow.eval(expr, (result: any, err: any) => {
         setLoading(false);
-        if (result) setPerspectives(JSON.parse(result));
+        if (result) {
+          try { setPerspectives(JSON.parse(result)); } catch {}
+        }
       });
     }
   };
@@ -105,12 +122,12 @@ export function PerspectivesTab() {
       {selected && (
         <div class="perspective-detail">
           <div class="sub-tab-bar">
-            <button class={`sub-tab-btn ${detailTab === 'sparql' ? 'active' : ''}`} onClick={() => setDetailTab('sparql')}>SPARQL</button>
+            <button class={`sub-tab-btn ${detailTab === 'query' ? 'active' : ''}`} onClick={() => setDetailTab('query')}>Query</button>
             <button class={`sub-tab-btn ${detailTab === 'links' ? 'active' : ''}`} onClick={() => setDetailTab('links')}>Links ({links.length})</button>
             <button class={`sub-tab-btn ${detailTab === 'subjectClasses' ? 'active' : ''}`} onClick={() => setDetailTab('subjectClasses')}>Subject Classes</button>
           </div>
 
-          {detailTab === 'sparql' && <SparqlEditor perspectiveUUID={selected} />}
+          {detailTab === 'query' && <SparqlEditor perspectiveUUID={selected} />}
 
           {detailTab === 'links' && (
             <div class="links-panel">

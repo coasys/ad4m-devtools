@@ -1,5 +1,20 @@
 import type { OperationRecord } from '../core/types';
 
+// Ensure V8 captures enough frames to reach application code
+if (typeof Error.stackTraceLimit === 'number') {
+  Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
+}
+
+/** Capture a stack trace synchronously (before any async boundary). */
+function captureStack(): string {
+  const prev = Error.stackTraceLimit;
+  Error.stackTraceLimit = 50;
+  const err = new Error();
+  Error.stackTraceLimit = prev;
+  // Remove "Error" header + captureStack + caller (the patched method)
+  return (err.stack || '').split('\n').slice(3).join('\n');
+}
+
 /**
  * REST + WebSocket adapter for AD4M DevTools bridge.
  * 
@@ -27,6 +42,7 @@ export function wrapRestClient(restClient: any, bridge: DevToolsBridge): void {
   const originalCall = restClient.call?.bind(restClient);
   if (originalCall) {
     restClient.call = async function(method: string, path: string, body?: any, options?: any) {
+      const stackTrace = captureStack();
       const opId = bridge.logOperation({
         type: 'request',
         transport: 'rest',
@@ -35,6 +51,7 @@ export function wrapRestClient(restClient: any, bridge: DevToolsBridge): void {
         path,
         url: `${baseUrl}${path}`,
         requestBody: body,
+        stackTrace,
       });
 
       try {
@@ -52,6 +69,7 @@ export function wrapRestClient(restClient: any, bridge: DevToolsBridge): void {
   const originalWsCall = restClient.wsCall?.bind(restClient) || restClient.rpc?.bind(restClient);
   if (originalWsCall) {
     const patchedWsCall = async function(method: string, params?: any) {
+      const stackTrace = captureStack();
       const opId = bridge.logOperation({
         type: 'request',
         transport: 'rest',
@@ -60,6 +78,7 @@ export function wrapRestClient(restClient: any, bridge: DevToolsBridge): void {
         path: method,
         url: `${baseUrl}/ws`,
         requestBody: params,
+        stackTrace,
       });
 
       try {

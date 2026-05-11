@@ -24,6 +24,12 @@ function formatDuration(op: any) {
 }
 
 function getBadge(op: any) {
+  if (op.rpcMethod === 'perspective.modelQuery' || op.rpcMethod === 'perspective.modelSubscribe') {
+    return { label: 'MDL', className: 'op-type op-trace op-model' };
+  }
+  if (op.rpcMethod === 'perspective.querySparql') {
+    return { label: 'SPQ', className: 'op-type op-trace op-sparql' };
+  }
   if (op.method) {
     return {
       label: op.method,
@@ -71,6 +77,9 @@ export function QueriesTab({ operations, subscriptions, subscriptionUpdates, get
         op.url,
         op.transport,
         op.queryLanguage,
+        op.modelClassName,
+        op.perspectiveUUID,
+        op.rpcMethod,
       ].filter(Boolean).join(' ').toLowerCase();
       return haystack.includes(filter.toLowerCase());
     })
@@ -112,12 +121,18 @@ export function QueriesTab({ operations, subscriptions, subscriptionUpdates, get
                   >
                     <span class="op-time">{formatTimestamp(op.startTime)}</span>
                     <span class={badge.className}>{badge.label}</span>
-                    <span class="op-name">{op.operationName}</span>
+                    <span class="op-name" title={op.rpcMethod || op.operationName}>{op.operationName}</span>
                     <span class="op-duration">{formatDuration(op)}</span>
+                    {op.dupCount > 1 && <span class="op-dup-badge" title={`Query seen ${op.dupCount} times`}>×{op.dupCount}</span>}
                     {op.errors?.length > 0 && <span class="op-error-badge">❌</span>}
                   </div>
                 );
               })}
+              {filtered.length > 100 && (
+                <div class="empty" style="padding: 4px 8px; font-size: 11px;">
+                  Showing 100 of {filtered.length} — use the filter to narrow results
+                </div>
+              )}
             </div>
           </div>
           <div class="queries-right">
@@ -131,19 +146,40 @@ export function QueriesTab({ operations, subscriptions, subscriptionUpdates, get
                   <div class="info-row"><span class="info-label">Timestamp</span><span>{formatTimestamp(selected.startTime)}</span></div>
                   <div class="info-row"><span class="info-label">Type</span><span>{selected.type || '-'}</span></div>
                   <div class="info-row"><span class="info-label">Transport</span><span>{selected.transport || '-'}</span></div>
+                  <div class="info-row"><span class="info-label">Socket</span><span>{selected.socketId || '-'}</span></div>
+                  <div class="info-row"><span class="info-label">RPC ID</span><span>{selected.wsRequestId || '-'}</span></div>
                   <div class="info-row"><span class="info-label">Method</span><span>{selected.method || '-'}</span></div>
                   <div class="info-row"><span class="info-label">Endpoint</span><span class="mono">{selected.path || selected.url || '-'}</span></div>
                   <div class="info-row"><span class="info-label">Status</span><span>{selected.statusCode ?? '-'}</span></div>
                   <div class="info-row"><span class="info-label">Duration</span><span>{selected.duration != null ? `${selected.duration}ms` : '-'}</span></div>
+                  <div class="info-row"><span class="info-label">First Response</span><span>{selected.firstResponseAt ? formatTimestamp(selected.firstResponseAt) : '-'}</span></div>
+                  <div class="info-row"><span class="info-label">Last Response</span><span>{selected.lastResponseAt ? formatTimestamp(selected.lastResponseAt) : '-'}</span></div>
+                  <div class="info-row"><span class="info-label">Response Period</span><span>{selected.responsePeriodMs != null ? `${selected.responsePeriodMs}ms` : '-'}</span></div>
+                  <div class="info-row"><span class="info-label">Responses</span><span>{selected.responseCount ?? 0}</span></div>
+                  <div class="info-row"><span class="info-label">Req Bytes</span><span>{selected.requestBytes ?? '-'}</span></div>
+                  <div class="info-row"><span class="info-label">Resp Bytes</span><span>{selected.totalResponseBytes ?? selected.responseBytes ?? '-'}</span></div>
+                  <div class="info-row"><span class="info-label">Total Bytes</span><span>{selected.totalBytes ?? '-'}</span></div>
                   <div class="info-row"><span class="info-label">Payload Size</span><span>{selected.payloadSize ?? '-'} bytes</span></div>
                   {selected.queryLanguage && (
                     <div class="info-row"><span class="info-label">Query Language</span><span>{selected.queryLanguage}</span></div>
+                  )}
+                  {selected.rpcMethod && (
+                    <div class="info-row"><span class="info-label">RPC Method</span><span class="mono">{selected.rpcMethod}</span></div>
+                  )}
+                  {selected.modelClassName && (
+                    <div class="info-row"><span class="info-label">Model Class</span><span class="mono">{selected.modelClassName}</span></div>
+                  )}
+                  {selected.perspectiveUUID && (
+                    <div class="info-row"><span class="info-label">Perspective</span><span class="mono">{selected.perspectiveUUID}</span></div>
+                  )}
+                  {selected.dupCount > 1 && (
+                    <div class="info-row"><span class="info-label">Duplicates</span><span class="dup-warning">⚠ Query seen {selected.dupCount} times — possible redundant call</span></div>
                   )}
                 </div>
 
                 {(selected.method || selected.path || selected.url) && (
                   <div>
-                    <h4>REST Request</h4>
+                    <h4>Request</h4>
                     <pre class="code-block request-line">{[selected.method || 'REQUEST', selected.path || selected.url || ''].filter(Boolean).join(' ')}</pre>
                   </div>
                 )}
@@ -180,6 +216,13 @@ export function QueriesTab({ operations, subscriptions, subscriptionUpdates, get
                   <div>
                     <h4>Response</h4>
                     {renderStructuredValue(selected.response)}
+                  </div>
+                )}
+
+                {Array.isArray(selected.responses) && selected.responses.length > 0 && (
+                  <div>
+                    <h4>Response Samples ({selected.responses.length})</h4>
+                    <JsonViewer data={selected.responses} />
                   </div>
                 )}
 

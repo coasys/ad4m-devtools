@@ -28,12 +28,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    sourcemap: true,
+    minify: false,
     rollupOptions: {
       input: {
         panel: resolve(__dirname, 'src/extension/panel.tsx'),
         devtools: resolve(__dirname, 'src/extension/devtools.ts'),
         background: resolve(__dirname, 'src/extension/background.ts'),
         'content-script': resolve(__dirname, 'src/extension/content-script.ts'),
+        'page-inject': resolve(__dirname, 'src/extension/page-inject.ts'),
       },
       output: {
         entryFileNames: '[name].js',

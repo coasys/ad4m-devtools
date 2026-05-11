@@ -11,6 +11,7 @@
 #   --executor PATH        Path to ad4m-executor binary (auto-detected from --ad4m)
 #   --ad4m DIR             AD4M repo root (for finding executor binary)
 #   --flux DIR             Flux repo root (serves app/dist via vite preview)
+#   --dev                  Run Flux in dev mode (vite dev with HMR + full sourcemaps)
 #   --data-path DIR        Executor data path (default: /tmp/ad4m-devtools)
 #   --port PORT             Executor port (default: 12000)
 #   --credential CRED      Admin credential (default: test123)
@@ -22,6 +23,8 @@
 #   --password PASS        Test user password (default: test123)
 #   --no-multi-user        Disable multi-user mode
 #   --generate-seed        Generate mock Flux seed data (community + channels + messages)
+#   --channels N           Number of channels for --generate-seed (default: 2)
+#   --messages N           Messages per channel for --generate-seed (default: 5)
 #   --no-seed              Skip perspective seeding even if --seed is set
 #   --no-flux              Don't serve Flux
 #   --no-tmux              Run executor in background instead of tmux
@@ -60,6 +63,8 @@ PASSPHRASE="test"
 SEED_FILE=""
 SEED_NAME=""
 GENERATE_SEED=false
+SEED_CHANNELS=""
+SEED_MESSAGES=""
 FLUX_PORT=3030
 MULTI_USER=true
 DO_SEED=true
@@ -67,6 +72,7 @@ DO_FLUX=true
 USE_TMUX=true
 FRESH=false
 HEADLESS_AUTH=false
+FLUX_DEV_MODE=false
 TEST_USER_EMAIL="dev@test.com"
 TEST_USER_PASSWORD="test123"
 
@@ -82,6 +88,8 @@ while [[ $# -gt 0 ]]; do
         --seed) [[ $# -ge 2 ]] || err "--seed requires a file path"; SEED_FILE="$2"; shift 2;;
         --seed-name) [[ $# -ge 2 ]] || err "--seed-name requires a name"; SEED_NAME="$2"; shift 2;;
         --generate-seed) GENERATE_SEED=true; shift;;
+        --channels) [[ $# -ge 2 ]] || err "--channels requires a number"; SEED_CHANNELS="$2"; shift 2;;
+        --messages) [[ $# -ge 2 ]] || err "--messages requires a number"; SEED_MESSAGES="$2"; shift 2;;
         --flux-port) [[ $# -ge 2 ]] || err "--flux-port requires a port"; FLUX_PORT="$2"; shift 2;;
         --user) [[ $# -ge 2 ]] || err "--user requires an email"; TEST_USER_EMAIL="$2"; shift 2;;
         --password) [[ $# -ge 2 ]] || err "--password requires a value"; TEST_USER_PASSWORD="$2"; shift 2;;
@@ -90,6 +98,7 @@ while [[ $# -gt 0 ]]; do
         --no-flux) DO_FLUX=false; shift;;
         --no-tmux) USE_TMUX=false; shift;;
         --fresh) FRESH=true; shift;;
+        --dev) FLUX_DEV_MODE=true; shift;;
         --headless-auth) HEADLESS_AUTH=true; shift;;
         -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'; exit 0;;
         *) err "Unknown option: $1";;
@@ -138,6 +147,7 @@ wait_for_api() {
 log "Stopping running processes..."
 pkill -9 -f ad4m-executor 2>/dev/null || true
 pkill -f "vite.*preview.*${FLUX_PORT}" 2>/dev/null || true
+pkill -f "vite.*--port.*${FLUX_PORT}" 2>/dev/null || true
 lsof -ti:"$FLUX_PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 2
 
@@ -267,6 +277,8 @@ if $GENERATE_SEED; then
     log "Generating mock seed data..."
     SEED_ARGS=(--output "$MOCK_SEED")
     [[ -n "$SEED_NAME" ]] && SEED_ARGS+=(--name "$SEED_NAME")
+    [[ -n "$SEED_CHANNELS" ]] && SEED_ARGS+=(--channels "$SEED_CHANNELS")
+    [[ -n "$SEED_MESSAGES" ]] && SEED_ARGS+=(--messages "$SEED_MESSAGES")
     python3 "$TOOL_DIR/generate-mock-seed.py" "${SEED_ARGS[@]}"
     SEED_FILE="$MOCK_SEED"
     ok "Mock seed generated: $MOCK_SEED"
@@ -274,19 +286,23 @@ fi
 
 # ==========================================================================
 # 9. Seed perspective (with user DID ownership)
+#    Uses deferred batch API: createBatch → addLinks(batchId) → commitBatch
+#    (single atomic persist, no per-link disk I/O or pubsub until commit)
 # ==========================================================================
 if $DO_SEED && [[ -n "$SEED_FILE" ]]; then
     [[ -f "$SEED_FILE" ]] || err "Seed file not found: $SEED_FILE"
     python3 -c "import json; json.load(open('$SEED_FILE'))" 2>/dev/null || err "Invalid JSON: $SEED_FILE"
 
-    # Check if perspective already imported (idempotent by name)
-    SEED_NAME_CHECK="${SEED_NAME}"
-    [[ -z "$SEED_NAME_CHECK" ]] && SEED_NAME_CHECK=$(python3 -c "import json; print(json.load(open('$SEED_FILE')).get('name',''))" 2>/dev/null)
     ALREADY_EXISTS=false
 
-    if [[ -n "$SEED_NAME_CHECK" ]]; then
-        CHECK_AUTH="${USER_JWT:-$CREDENTIAL}"
-        EXISTS=$(ws_rpc "$CHECK_AUTH" "perspective.all" | python3 -c "
+    # Skip idempotency check when --fresh (we just wiped all data)
+    if ! $FRESH; then
+        SEED_NAME_CHECK="${SEED_NAME}"
+        [[ -z "$SEED_NAME_CHECK" ]] && SEED_NAME_CHECK=$(python3 -c "import json; print(json.load(open('$SEED_FILE')).get('name',''))" 2>/dev/null)
+
+        if [[ -n "$SEED_NAME_CHECK" ]]; then
+            CHECK_AUTH="${USER_JWT:-$CREDENTIAL}"
+            EXISTS=$(ws_rpc "$CHECK_AUTH" "perspective.all" | python3 -c "
 import sys, json
 perspectives = json.load(sys.stdin)
 if isinstance(perspectives, list):
@@ -295,7 +311,8 @@ if isinstance(perspectives, list):
 else:
     print(False)
 " 2>/dev/null) || EXISTS="False"
-        [[ "$EXISTS" == "True" ]] && ALREADY_EXISTS=true
+            [[ "$EXISTS" == "True" ]] && ALREADY_EXISTS=true
+        fi
     fi
 
     if $ALREADY_EXISTS; then
@@ -308,7 +325,7 @@ else:
         [[ -f "$TOOL_DIR/ad4m-perspective-tool.py" ]] || err "ad4m-perspective-tool.py not found in $TOOL_DIR"
         log "Importing perspective from $SEED_FILE via WS RPC (as ${TEST_USER_EMAIL:-admin})..."
         SEED_UUID_NEW=$(python3 "$TOOL_DIR/ad4m-perspective-tool.py" \
-            --url "$WS_URL" --auth "$SEED_AUTH" --ws \
+            --url "$WS_URL" --auth "$SEED_AUTH" \
             import "$SEED_FILE" $SEED_NAME_ARG) || err "Perspective import failed"
         ok "Perspective imported: $SEED_UUID_NEW"
     fi
@@ -319,21 +336,41 @@ fi
 # ==========================================================================
 if $DO_FLUX && [[ -n "$FLUX_DIR" ]]; then
     FLUX_DIR="$(cd "$FLUX_DIR" && pwd)"
-    [[ -f "$FLUX_DIR/app/dist/index.html" ]] || err "Flux not built - run ad4m-flux-rebuild.sh first"
 
-    if $USE_TMUX; then
-        tmux kill-session -t flux 2>/dev/null || true
-        log "Starting Flux in tmux session 'flux'..."
-        tmux new-session -d -s flux "cd $FLUX_DIR/app && npx vite preview --port $FLUX_PORT 2>&1"
-        sleep 3
-        ok "Flux serving on http://localhost:$FLUX_PORT - tmux attach -t flux"
+    if $FLUX_DEV_MODE; then
+        # Dev mode: vite dev server with HMR + unbundled ES modules (full sourcemaps in stack traces)
+        if $USE_TMUX; then
+            tmux kill-session -t flux 2>/dev/null || true
+            log "Starting Flux dev server in tmux session 'flux'..."
+            tmux new-session -d -s flux "cd $FLUX_DIR/app && npx vite --port $FLUX_PORT 2>&1"
+            sleep 5
+            ok "Flux dev server on http://localhost:$FLUX_PORT - tmux attach -t flux"
+        else
+            log "Starting Flux dev server in background..."
+            cd "$FLUX_DIR/app"
+            npx vite --port "$FLUX_PORT" > /tmp/flux-serve.log 2>&1 &
+            FLUX_PID=$!
+            sleep 5
+            ok "Flux dev server on http://localhost:$FLUX_PORT (PID $FLUX_PID)"
+        fi
     else
-        log "Starting Flux in background..."
-        cd "$FLUX_DIR/app"
-        npx vite preview --port "$FLUX_PORT" > /tmp/flux-serve.log 2>&1 &
-        FLUX_PID=$!
-        sleep 3
-        ok "Flux serving on http://localhost:$FLUX_PORT (PID $FLUX_PID)"
+        # Preview mode: serves pre-built app/dist
+        [[ -f "$FLUX_DIR/app/dist/index.html" ]] || err "Flux not built - run ad4m-flux-rebuild.sh first"
+
+        if $USE_TMUX; then
+            tmux kill-session -t flux 2>/dev/null || true
+            log "Starting Flux in tmux session 'flux'..."
+            tmux new-session -d -s flux "cd $FLUX_DIR/app && npx vite preview --port $FLUX_PORT 2>&1"
+            sleep 3
+            ok "Flux serving on http://localhost:$FLUX_PORT - tmux attach -t flux"
+        else
+            log "Starting Flux in background..."
+            cd "$FLUX_DIR/app"
+            npx vite preview --port "$FLUX_PORT" > /tmp/flux-serve.log 2>&1 &
+            FLUX_PID=$!
+            sleep 3
+            ok "Flux serving on http://localhost:$FLUX_PORT (PID $FLUX_PID)"
+        fi
     fi
 fi
 

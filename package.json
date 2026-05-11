@@ -3,10 +3,15 @@
   "private": true,
   "scripts": {
     "build": "pnpm -r build",
-    "dev": "pnpm -r --parallel dev"
+    "dev": "pnpm -r --parallel dev",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm build && playwright test",
+    "test:all": "pnpm test && pnpm test:e2e"
   },
   "devDependencies": {
-    "typescript": "^5.3.0"
+    "@playwright/test": "^1.54.1",
+    "typescript": "^5.3.0",
+    "ws": "^8.18.0"
   },
   "packageManager": "pnpm@9.0.0"
 }

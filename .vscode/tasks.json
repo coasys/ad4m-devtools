@@ -63,6 +63,18 @@
         "whisper_large_v3_turbo_quantized"
       ],
       "default": "whisper_small"
+    },
+    {
+      "id": "channelCount",
+      "type": "promptString",
+      "description": "Number of channels to create",
+      "default": "2"
+    },
+    {
+      "id": "messageCount",
+      "type": "promptString",
+      "description": "Messages per channel",
+      "default": "10"
     }
   ],
   "tasks": [
@@ -135,6 +147,26 @@
       },
       "problemMatcher": [],
       "detail": "Kill existing → fresh data → generate mock community/channels/messages → Flux → browser auth"
+    },
+    {
+      "label": "AD4M + Flux: Launch Dev (Fresh + Mock Seed + Auth)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-flux-launch.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--flux", "${input:fluxDir}",
+        "--generate-seed",
+        "--fresh",
+        "--dev",
+        "--headless-auth"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Like Mock Seed + Auth but runs vite dev (HMR + full sourcemaps in stack traces)"
     },
     {
       "label": "AD4M + Flux: Launch (Fresh + Seed + Auth)",
@@ -389,6 +421,80 @@
       },
       "problemMatcher": [],
       "detail": "Tail the executor log file (useful for security codes)"
+    },
+    {
+      "label": "Tauri: Build & Run AD4M App (Release)",
+      "type": "shell",
+      "command": "pnpm",
+      "args": [
+        "-C",
+        "${input:ad4mDir}/ui",
+        "tauri",
+        "dev",
+        "--release"
+      ],
+      "isBackground": false,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Build and run Tauri ad4m launcher app (release mode for ARM64 compatibility)"
+    },
+    {
+      "label": "Flux: Dev Mode",
+      "type": "shell",
+      "command": "pnpm",
+      "args": [
+        "-C",
+        "${input:fluxDir}",
+        "dev"
+      ],
+      "isBackground": false,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Start Flux dev server with hot module reload"
+    },
+    {
+      "label": "WE: Dev Mode",
+      "type": "shell",
+      "command": "pnpm",
+      "args": [
+        "-C",
+        "${input:weDir}",
+        "dev"
+      ],
+      "isBackground": false,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Start WE dev server with hot module reload"
+    },
+    {
+      "label": "AD4M: Populate Links (Flux Channels + Messages)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-populate-links.sh",
+      "args": [
+        "--channels", "${input:channelCount}",
+        "--messages", "${input:messageCount}",
+        "--port", "${input:gqlPort}",
+        "--auth", "${input:adminCredential}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Generate SHACL-compliant Channel/Message links into a running executor"
     }
   ]
 }
