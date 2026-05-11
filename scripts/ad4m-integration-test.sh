@@ -172,7 +172,12 @@ async def main():
         r = json.loads(await asyncio.wait_for(ws.recv(), timeout=60))
         if r.get('error'):
             print('  FAILED:', r['error']); exit(1)
-        print('  Agent DID:', r['result'].get('did','<unknown>')[:40] + '...')
+        # Handle both response formats: {result: {did: ...}} and {result: {agent: {did: ...}}}
+        result = r.get('result', r)
+        did = None
+        if isinstance(result, dict):
+            did = result.get('did') or (result.get('agent', {}) or {}).get('did')
+        print('  Agent DID:', (did or '<unknown>')[:40] + '...')
 asyncio.run(main())
 "
 echo -e "  ${GREEN}Agent ready${NC}"

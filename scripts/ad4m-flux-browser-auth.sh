@@ -204,13 +204,14 @@ try:
         bundle = r.read().decode()
 
     # Find: localStorage.setItem(`${VAR}/${e}`,t) — extract VAR name
-    m = re.search(r'localStorage\.setItem\(`\$\{(\w+\$?\d*)\}/\$\{[a-z]\}`', bundle)
+    # Note: minifiers may rename the key param (e.g. key→key2), so use \w+ not [a-z]
+    m = re.search(r'localStorage\.setItem\(`\$\{(\w+\$?\d*)\}/\$\{\w+\}`', bundle)
     if not m:
         sys.exit(1)
 
     var_escaped = re.escape(m.group(1))
-    # Find: VAR="version-string"
-    m = re.search(var_escaped + r'="([^"]+)"', bundle)
+    # Find: VAR = "version-string" (may have spaces around = in non-fully-minified builds)
+    m = re.search(var_escaped + r'\s*=\s*"([^"]+)"', bundle)
     if not m:
         sys.exit(1)
 
