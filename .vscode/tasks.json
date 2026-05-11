@@ -395,6 +395,22 @@
       "detail": "Kill existing → fresh data → executor (multi-user) → create user → WE (vite dev with HMR) → browser auth"
     },
     {
+      "label": "AD4M: Integration Tests (executor RPC)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/ad4m-integration-test.sh",
+      "args": [
+        "--ad4m", "${input:ad4mDir}",
+        "--port", "4000"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Fresh executor → generate agent → run WS-RPC test suite (perspectives, SPARQL, modelQuery, evaluateGetters) → tear down"
+    },
+    {
       "label": "AD4M: Kill All (executor + Flux/WE tmux)",
       "type": "shell",
       "command": "bash",
