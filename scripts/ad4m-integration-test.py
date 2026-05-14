@@ -48,11 +48,20 @@ PASS = FAIL = 0
 
 
 async def rpc(op, params=None):
-    """Single RPC call over a fresh WebSocket connection."""
+    """Single RPC call over a fresh WebSocket connection.
+    Skips broadcast notifications and waits for the response matching our request ID."""
     async with websockets.connect(URL) as ws:
         rid = str(uuid.uuid4())
         await ws.send(json.dumps({"id": rid, "type": op, "params": params or {}}))
-        return json.loads(await asyncio.wait_for(ws.recv(), timeout=60))
+        deadline = asyncio.get_event_loop().time() + 60
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise TimeoutError(f"RPC {op} timed out after 60s")
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+            if msg.get("id") == rid:
+                return msg
+            # else: broadcast notification — skip it
 
 
 def check(desc, expected, actual_str):
