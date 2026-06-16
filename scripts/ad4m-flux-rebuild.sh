@@ -34,6 +34,23 @@ warn() { echo -e "\033[1;33m⚠ $1\033[0m" >&2; }
 err() { echo -e "\033[1;31m✗ $1\033[0m" >&2; exit 1; }
 ok()  { echo -e "\033[1;32m✓ $1\033[0m"; }
 
+# --- Use repo-pinned pnpm via corepack ---
+# Both ad4m and flux pin pnpm@9.15.0 (package.json "packageManager" field), which
+# is what CI uses. A globally-installed pnpm may be a different major version that
+# breaks on the workspace config (e.g. pnpm 10 crashes parsing ad4m's overrides).
+# Install a corepack shim on PATH so every pnpm call — including nested ones spawned
+# by turbo/build scripts — auto-selects the version pinned by the nearest package.json.
+command -v corepack &>/dev/null || err "corepack not found (ships with Node >=16). Enable it with: corepack enable"
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+COREPACK_SHIM_DIR="$(mktemp -d)"
+corepack enable --install-directory "$COREPACK_SHIM_DIR" pnpm >/dev/null 2>&1 || err "Failed to set up corepack pnpm shim"
+export PATH="$COREPACK_SHIM_DIR:$PATH"
+cleanup_shim() { rm -rf "$COREPACK_SHIM_DIR"; }
+trap cleanup_shim EXIT
+# Note: the resolved pnpm version is per-repo (read from each package.json's
+# "packageManager" field once we cd into ad4m/flux), not from this cwd.
+ok "corepack pnpm shim active (auto-selects each repo's pinned version)"
+
 # --- Defaults ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_AD4M="./ad4m"
@@ -143,6 +160,8 @@ restore_flux_files() {
     rm -f "$FLUX_DIR/ad4m"
     # Restore any build artifacts that are tracked in git
     git -C "$FLUX_DIR" checkout -- packages/ui/meta.json 2>/dev/null || true
+    # This trap supersedes the early cleanup_shim EXIT trap, so clean the shim here too.
+    cleanup_shim
 }
 trap restore_flux_files EXIT
 

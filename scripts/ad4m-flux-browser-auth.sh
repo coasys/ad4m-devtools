@@ -110,75 +110,12 @@ USER_JWT=$(echo "$USER_JWT" | sed 's/^"//;s/"$//')
 [[ -n "$USER_JWT" ]] || err "Login failed for $EMAIL"
 ok "JWT obtained (${#USER_JWT} chars)"
 
-# --- Step 4b: Ensure Flux profile exists ---
-# Check if profile already has flux://profile links
-PROFILE_LINKS=$(python3 "$WS_RPC" --url "$WS_URL" --token "$USER_JWT" "agent.get" 2>/dev/null \
-    | python3 -c "
-import sys,json
-try:
-    agent = json.load(sys.stdin)
-    links = agent.get('perspective',{}).get('links',[])
-    flux = [l for l in links if l.get('data',{}).get('source','').startswith('flux://')]
-    print(len(flux))
-except: print('0')" 2>/dev/null) || PROFILE_LINKS="0"
-
-if [[ "$PROFILE_LINKS" == "0" ]]; then
-    log "Creating Flux profile via WS RPC..."
-    PROFILE_RESULT=$(python3 << PROFILE_EOF
-import asyncio, json, sys, uuid
-import websockets
-
-ws_url = "$WS_URL"
-token = "$USER_JWT"
-
-async def ws_rpc(operation, params=None):
-    url = f"{ws_url}?token={token}"
-    async with websockets.connect(url) as ws:
-        req_id = str(uuid.uuid4())
-        await ws.send(json.dumps({"id": req_id, "type": operation, "params": params or {}}))
-        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
-        if "error" in resp and resp["error"] is not None:
-            raise RuntimeError(f"WS RPC error: {resp['error']}")
-        return resp.get("result", resp)
-
-try:
-    # Create expression
-    exp_url = asyncio.run(ws_rpc("expression.create", {
-        "content": '"TestUser"',
-        "languageAddress": "literal"
-    }))
-    # Get agent DID
-    agent = asyncio.run(ws_rpc("agent.get"))
-    did = agent["did"]
-    # Update profile
-    asyncio.run(ws_rpc("agent.updateProfile", {
-        "perspective": {
-            "links": [{
-                "author": did,
-                "timestamp": "2026-01-01T00:00:00Z",
-                "data": {
-                    "source": "flux://profile",
-                    "predicate": "sioc://has_username",
-                    "target": exp_url
-                },
-                "proof": {"key": "", "signature": ""}
-            }]
-        }
-    }))
-    print("ok")
-except Exception as e:
-    print(f"fail: {e}", file=sys.stderr)
-    sys.exit(1)
-PROFILE_EOF
-    )
-    if [[ "$PROFILE_RESULT" == "ok" ]]; then
-        ok "Flux profile created"
-    else
-        warn "Profile creation issue: $PROFILE_RESULT"
-    fi
-else
-    ok "Flux profile already exists ($PROFILE_LINKS links)"
-fi
+# Note: the Flux profile is created through the actual signup UI later (Step F),
+# by filling the username field and clicking "Create user". Driving Flux's own
+# createProfile() guarantees the profile links match exactly what Flux expects —
+# unlike a hand-rolled WS-RPC link, which Flux did not recognise (it stayed on
+# the signup page). If a profile already exists, Flux skips signup and Step F
+# is a no-op.
 
 # --- Step 5: Detect ad4m-connect version ---
 if [[ -z "$CONNECT_VERSION" ]]; then
@@ -255,18 +192,25 @@ python3 -c "import websockets" 2>/dev/null || err "Missing: pip3 install websock
 # --- Step 7: Launch Chrome ---
 if $DO_LAUNCH; then
     if curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then
-        ok "Chrome already on CDP port $CDP_PORT"
+        ok "Browser already on CDP port $CDP_PORT"
     else
-        log "Launching Chrome..."
+        log "Launching Chromium..."
+        # Prefer Chromium; fall back to Google Chrome if Chromium isn't installed.
+        # Note: snap chromium works with the default /tmp profile (its private mount
+        # namespace + --use-fake-ui-for-media-stream cover the camera/mic prompt).
         CHROME_BIN=""
-        if [[ -d "/Applications/Google Chrome.app" ]]; then
+        if [[ -d "/Applications/Chromium.app" ]]; then
+            CHROME_BIN="/Applications/Chromium.app/Contents/MacOS/Chromium"
+        elif command -v chromium &>/dev/null; then
+            CHROME_BIN="$(command -v chromium)"
+        elif command -v chromium-browser &>/dev/null; then
+            CHROME_BIN="$(command -v chromium-browser)"
+        elif [[ -d "/Applications/Google Chrome.app" ]]; then
             CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         elif command -v google-chrome &>/dev/null; then
             CHROME_BIN="google-chrome"
-        elif command -v chromium-browser &>/dev/null; then
-            CHROME_BIN="chromium-browser"
         fi
-        [[ -n "$CHROME_BIN" ]] || err "Chrome not found"
+        [[ -n "$CHROME_BIN" ]] || err "Chromium (or Chrome) not found"
 
         prepare_profile_permissions() {
             local profile_dir="$1"
@@ -317,14 +261,26 @@ PYEOF
         launch_chrome() {
             local profile_dir="$1"
             prepare_profile_permissions "$profile_dir"
-            "$CHROME_BIN" \
+            # Detach the browser into its own session so it survives this script
+            # exiting (success OR failure) and the VSCode task tearing down its
+            # process group. setsid (Linux) starts a new session; nohup is the
+            # macOS fallback. disown removes it from the shell's job table so no
+            # SIGHUP is sent on exit. Result: the window stays open no matter what.
+            local detach=()
+            if command -v setsid >/dev/null 2>&1; then
+                detach=(setsid)
+            elif command -v nohup >/dev/null 2>&1; then
+                detach=(nohup)
+            fi
+            "${detach[@]}" "$CHROME_BIN" \
                 --remote-debugging-port="$CDP_PORT" \
                 --user-data-dir="$profile_dir" \
                 --no-first-run \
                 --no-default-browser-check \
                 --remote-allow-origins='*' \
                 --use-fake-ui-for-media-stream \
-                "about:blank" >>"$CHROME_LOG_FILE" 2>&1 &
+                "about:blank" </dev/null >>"$CHROME_LOG_FILE" 2>&1 &
+            disown 2>/dev/null || true
         }
 
         : > "$CHROME_LOG_FILE"
@@ -335,7 +291,7 @@ PYEOF
             sleep 1
         done
         if ! curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then
-            warn "Chrome launch failed with profile $CHROME_PROFILE, retrying with fresh profile"
+            warn "Chromium launch failed with profile $CHROME_PROFILE, retrying with fresh profile"
             CHROME_PROFILE="${CHROME_PROFILE}-fresh-${CDP_PORT}"
             rm -rf "$CHROME_PROFILE"
             launch_chrome "$CHROME_PROFILE"
@@ -344,12 +300,12 @@ PYEOF
                 sleep 1
             done
         fi
-        curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 || err "Chrome didn't start (see $CHROME_LOG_FILE)"
-        ok "Chrome launched"
+        curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 || err "Chromium didn't start (see $CHROME_LOG_FILE)"
+        ok "Chromium launched"
     fi
 else
     curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 || err "No CDP on port $CDP_PORT"
-    ok "Chrome CDP on port $CDP_PORT"
+    ok "Browser CDP on port $CDP_PORT"
 fi
 
 # --- Step 8: Ensure at least one tab exists ---
@@ -375,7 +331,7 @@ fi
 # --- Step 9: Inject auth + create profile ---
 log "Injecting auth and setting up Flux..."
 
-python3 - "$CDP_PORT" "$FLUX_URL" "$CONNECT_URL" "$USER_JWT" "$CONNECT_VERSION" "$API_PORT" << 'PYEOF'
+python3 - "$CDP_PORT" "$FLUX_URL" "$CONNECT_URL" "$USER_JWT" "$CONNECT_VERSION" "$API_PORT" "$EMAIL" << 'PYEOF'
 import asyncio, json, sys, time, urllib.request
 import websockets
 
@@ -385,6 +341,11 @@ CONNECT_URL    = sys.argv[3]
 USER_JWT       = sys.argv[4]
 CONNECT_VER    = sys.argv[5]
 API_PORT       = sys.argv[6]
+EMAIL          = sys.argv[7] if len(sys.argv) > 7 else "dev@test.com"
+# Username for the Flux signup form (must be >= 3 chars per SignUp.vue validation)
+USERNAME       = (EMAIL.split("@")[0] or "dev")
+if len(USERNAME) < 3:
+    USERNAME = (USERNAME + "dev")[:8]
 CDP            = f"http://127.0.0.1:{CDP_PORT}"
 T0             = time.monotonic()
 
@@ -683,11 +644,13 @@ async def run():
                 })()
             """)
 
-            # Wait for app to run setAdamClient → refreshMyProfile → getMyCommunities → initialized
+            # Wait for app to run setAdamClient → refreshMyProfile → getMyCommunities → initialized.
+            # A user with no profile lands on #/signup — return on that too so we don't
+            # burn the full timeout before Step F drives the signup form.
             home = await poll("""
                 (function() {
                     var h = document.location.hash;
-                    return (h && (h.match(/^#\\/home/) || h.match(/^#\\/communities/))) ? h : '';
+                    return (h && (h.match(/^#\\/home/) || h.match(/^#\\/communities/) || h.match(/^#\\/signup/))) ? h : '';
                 })()
             """, "navigate to home after auth", timeout_s=30)
             if home:
@@ -701,69 +664,69 @@ async def run():
             print(f"  The JWT may be invalid or expired. Try re-running ad4m-flux-launch.sh", file=sys.stderr)
             sys.exit(1)
 
-        # ── Step F: Handle signup page ──
+        # ── Step F: Handle signup page — fill the profile form and submit ──
+        # A new agent has no Flux profile, so the router lands on #/signup
+        # (SignUp.vue). Drive its form: type the username into <j-input> and
+        # click the <j-button> "Create user". This runs Flux's own createProfile(),
+        # which writes exactly the profile links Flux expects, then navigates home.
         current_hash = await js("document.location.hash") or ""
         if current_hash.startswith('#/signup'):
-            print(f"  [{elapsed()}] At signup -- reloading to pick up profile...")
-            await send("Page.navigate", {"url": FLUX_URL})
-            await poll("""
-                (function() { return document.readyState === 'complete' ? 'ready' : ''; })()
-            """, "reload", timeout_s=10)
+            print(f"  [{elapsed()}] At signup — filling profile form (username: {USERNAME})...")
 
-            # Wait for ad4m-connect to reconnect
-            ac_ready = await poll("""
+            # Set the username. <j-input> is a custom element whose real <input>
+            # lives in shadow DOM; Vue binds via @input reading e.target.value.
+            # Drive the inner native input so the component's own handler fires
+            # and Vue's reactive `username` updates (enabling the submit button).
+            fill_expr = """
                 (function() {
-                    var ac = document.querySelector('ad4m-connect');
-                    if (!ac || !ac.core) return '';
-                    if (ac.core.authState === 'authenticated' && ac.core.connectionState === 'connected') return 'authenticated';
-                    var view = ac.__currentView || '';
-                    return (view.includes('logged-in') || view.includes('dashboard')) ? view : '';
+                    var inp = document.querySelector('j-input[label="Username"]')
+                              || document.querySelector('j-input');
+                    if (!inp) return '';
+                    var v = __UNAME__;
+                    var native = inp.shadowRoot && inp.shadowRoot.querySelector('input');
+                    if (native) {
+                        var setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(native, v);
+                        native.dispatchEvent(new Event('input', { bubbles: true }));
+                        native.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    inp.value = v;
+                    inp.dispatchEvent(new CustomEvent('input', { bubbles: true, composed: true }));
+                    inp.dispatchEvent(new CustomEvent('blur', { bubbles: true, composed: true }));
+                    return 'filled';
                 })()
-            """, "ad4m-connect reconnect", timeout_s=15)
+            """.replace('__UNAME__', json.dumps(USERNAME))
+            filled = await poll(fill_expr, "fill username field", timeout_s=15)
+            print(f"  [{elapsed()}] Username field: {filled or 'NOT FOUND'}")
 
-            if ac_ready:
-                print(f"  [{elapsed()}] ad4m-connect reconnected: {ac_ready}")
-                # Dismiss modal + dispatch auth event
-                await js("""
-                    (function() {
-                        var ac = document.querySelector('ad4m-connect');
-                        if (!ac) return;
-                        ac.__modalOpen = false;
-                        ac.modalOpen = false;
-                        if (ac.core && ac.core.ad4mClient) {
-                            ac.core.dispatchEvent(new CustomEvent('authstatechange', { detail: 'authenticated' }));
-                        }
-                    })()
-                """)
+            # Click "Create user" once the form considers it valid (button enabled).
+            clicked = await poll("""
+                (function() {
+                    var btns = Array.prototype.slice.call(document.querySelectorAll('j-button'));
+                    var btn = btns.filter(function(b) {
+                        return /create user/i.test(b.textContent || '');
+                    })[0] || document.querySelector('j-button[variant="primary"]');
+                    if (!btn) return '';
+                    if (btn.hasAttribute('disabled') || btn.disabled || btn.loading) return '';
+                    btn.click();
+                    return 'clicked';
+                })()
+            """, "click Create user button", timeout_s=15)
+            print(f"  [{elapsed()}] Create user button: {clicked or 'NOT CLICKED (still disabled?)'}")
 
+            # createProfile() resolves then routes to #/home (or a redirect).
             home = await poll("""
                 (function() {
                     var h = document.location.hash;
                     return (h && (h.match(/^#\\/home/) || h.match(/^#\\/communities/))) ? h : '';
                 })()
-            """, "navigate to home", timeout_s=30)
+            """, "navigate to home after signup", timeout_s=30)
 
             if home:
-                print(f"  [{elapsed()}] Navigated to: {home}")
+                print(f"  [{elapsed()}] Profile created — navigated to: {home}")
             else:
-                final_state = await js("""
-                    (function() {
-                        var ac = document.querySelector('ad4m-connect');
-                        var app = document.querySelector('#app');
-                        var vue = app && app.__vue_app__;
-                        var pinia = vue && vue.config.globalProperties.$pinia;
-                        var appStore = null;
-                        if (pinia) pinia._s.forEach(function(s, k) { if (k === 'appStore') appStore = s; });
-                        return JSON.stringify({
-                            view: ac && (ac.__currentView || '') || 'none',
-                            modal: ac && ac.__modalOpen,
-                            coreClient: !!(ac && ac.core && ac.core.ad4mClient),
-                            hash: document.location.hash,
-                            initialized: appStore && appStore.initialized,
-                        });
-                    })()
-                """) or "{}"
-                print(f"  [{elapsed()}] Debug state: {final_state}")
+                print(f"  [{elapsed()}] Still at: " + (await js("document.location.hash") or "empty"))
                 await drain_events()
                 errs = [m for m in console_msgs if any(w in m.lower() for w in ['error', 'exception', 'fail', 'reject'])]
                 if errs:
