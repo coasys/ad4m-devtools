@@ -44,7 +44,7 @@ CONSTRUCTOR = "ad4m://constructor"
 DESTRUCTOR = "ad4m://destructor"
 SETTER = "ad4m://setter"
 WRITABLE = "ad4m://writable"
-RESOLVE_LANG = "ad4m://resolveLanguage"
+RESOLVE_LITERAL = "ad4m://resolveLiteral"
 
 # RDF / SHACL predicates
 RDF_TYPE = "rdf://type"
@@ -124,7 +124,7 @@ def _property_shape(
     min_count=None,
     max_count=None,
     setter_action=None,
-    resolve_language=None,
+    resolve_literal=False,
     ts="",
 ):
     """Generate SHACL PropertyShape links for a model property."""
@@ -156,9 +156,9 @@ def _property_shape(
     if setter_action:
         a(prop_uri, SETTER, f"literal:string:{json.dumps(setter_action)}")
 
-    # Resolve language
-    if resolve_language:
-        a(prop_uri, RESOLVE_LANG, f"literal:string:{resolve_language}")
+    # Resolve literal
+    if resolve_literal:
+        a(prop_uri, RESOLVE_LITERAL, "literal:true")
 
     return links
 
@@ -203,7 +203,7 @@ def _model_schema(name, shape_prefix, properties, constructor_actions, destructo
                 min_count=prop.get("min_count"),
                 max_count=prop.get("max_count"),
                 setter_action=prop.get("setter"),
-                resolve_language=prop.get("resolve_language"),
+                resolve_literal=prop.get("resolve_literal", False),
                 ts=ts,
             )
         )
@@ -233,7 +233,7 @@ def generate_schema(ts):
                     "path": RDF_NAME,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                     "setter": [
                         {
                             "action": "setSingleTarget",
@@ -248,7 +248,7 @@ def generate_schema(ts):
                     "path": RDF_DESC,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                 },
             ],
             constructor_actions=[
@@ -289,7 +289,7 @@ def generate_schema(ts):
                     "path": CHANNEL_NAME,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                     "setter": [
                         {
                             "action": "setSingleTarget",
@@ -304,7 +304,7 @@ def generate_schema(ts):
                     "path": CHANNEL_DESC,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                 },
                 {
                     "name": "isConversation",
@@ -359,7 +359,7 @@ def generate_schema(ts):
                     "path": BODY,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                     "setter": [
                         {
                             "action": "setSingleTarget",
@@ -408,28 +408,28 @@ def generate_schema(ts):
                     "path": RDF_NAME,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                 },
                 {
                     "name": "description",
                     "path": RDF_DESC,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                 },
                 {
                     "name": "icon",
                     "path": RDF_ICON,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                 },
                 {
                     "name": "pkg",
                     "path": RDF_PKG,
                     "writable": True,
                     "max_count": 1,
-                    "resolve_language": "literal",
+                    "resolve_literal": True,
                 },
             ],
             constructor_actions=[
