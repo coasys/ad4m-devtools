@@ -37,9 +37,9 @@ export function SparqlEditor({ perspectiveUUID }: Props) {
         setRunning(false);
         if (err) { setError(String(err)); return; }
         try {
-          const parsed = JSON.parse(res);
-          if (parsed.error) setError(parsed.error);
-          else setResult(parsed.data);
+          const parsed = typeof res === 'string' ? JSON.parse(res) : res;
+          if (parsed?.error) setError(parsed.error);
+          else setResult(parsed?.data !== undefined ? parsed.data : parsed);
         } catch { setError('Failed to parse result'); }
       });
     }

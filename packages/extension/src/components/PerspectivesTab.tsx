@@ -41,9 +41,11 @@ async function runSparqlQuery(perspectiveId: string, query: string): Promise<any
   `);
   if (!result) return null;
   try {
-    const parsed = JSON.parse(result);
-    if (parsed.error) throw new Error(parsed.error);
-    return parsed.data;
+    // Chrome's inspectedWindow.eval may return a deserialized object (via CDP)
+    // instead of the raw JSON string. Handle both cases.
+    const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+    if (parsed?.error) throw new Error(parsed.error);
+    return parsed?.data !== undefined ? parsed.data : parsed;
   } catch (e: any) {
     if (e.message) throw e;
     return null;
@@ -643,14 +645,15 @@ export function PerspectivesTab({ perspectives: passivePerspectives }: Props) {
           {/* ─── Graph ─── */}
           {detailTab === 'graph' && (
             <div class="graph-panel">
-              {links.length === 0 && (
+              {links.length === 0 && !linksLoading && (
                 <div class="graph-load-prompt">
-                  <p class="empty">Load links first to visualise the graph.</p>
-                  <button class="btn" onClick={() => { setDetailTab('links'); setTimeout(loadLinks, 100); }}>
-                    Load Links
+                  <p class="empty">No links loaded yet.</p>
+                  <button class="btn" onClick={loadLinks}>
+                    Load Links for Graph
                   </button>
                 </div>
               )}
+              {linksLoading && <p class="empty">Loading links…</p>}
               {links.length > 0 && <GraphView links={links} />}
             </div>
           )}
