@@ -1,7 +1,7 @@
 import { CompleteOperationOptions, OperationRecord } from './types';
 import { PerformanceTracker } from './performance';
 
-const MAX_OPERATIONS = 500;
+const MAX_OPERATIONS = 2000;
 let nextOpId = 1;
 
 // Ensure V8 captures enough frames to reach application code

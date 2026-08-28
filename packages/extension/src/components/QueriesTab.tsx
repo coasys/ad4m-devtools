@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useState, useRef, useEffect } from 'preact/hooks';
 import { JsonViewer } from './JsonViewer';
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
 }
 
 type SubTab = 'requests' | 'subscriptions' | 'getters';
+
+const PAGE_SIZE = 80;
 
 function formatTimestamp(value?: number) {
   if (!value) return '-';
@@ -66,6 +68,9 @@ export function QueriesTab({ operations, subscriptions, subscriptionUpdates, get
   const [selected, setSelected] = useState<any>(null);
   const [filter, setFilter] = useState('');
   const [subTab, setSubTab] = useState<SubTab>('requests');
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const filtered = operations
     .filter(op => {
@@ -84,6 +89,33 @@ export function QueriesTab({ operations, subscriptions, subscriptionUpdates, get
       return haystack.includes(filter.toLowerCase());
     })
     .sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
+
+  // Reset visible count when filter changes
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [filter]);
+
+  // IntersectionObserver for infinite scroll
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const container = listRef.current;
+    if (!sentinel || !container) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleCount(prev => Math.min(prev + PAGE_SIZE, filtered.length));
+        }
+      },
+      { root: container, rootMargin: '200px' }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [filtered.length, subTab]);
+
+  const visible = filtered.slice(0, visibleCount);
+  const hasMore = visibleCount < filtered.length;
 
   const selectedBadge = selected ? getBadge(selected) : null;
 
@@ -110,8 +142,8 @@ export function QueriesTab({ operations, subscriptions, subscriptionUpdates, get
               value={filter}
               onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
             />
-            <div class="operations-list">
-              {filtered.slice(0, 100).map(op => {
+            <div class="operations-list" ref={listRef}>
+              {visible.map(op => {
                 const badge = getBadge(op);
                 return (
                   <div
@@ -128,9 +160,14 @@ export function QueriesTab({ operations, subscriptions, subscriptionUpdates, get
                   </div>
                 );
               })}
-              {filtered.length > 100 && (
-                <div class="empty" style="padding: 4px 8px; font-size: 11px;">
-                  Showing 100 of {filtered.length} — use the filter to narrow results
+              {hasMore && (
+                <div ref={sentinelRef} class="scroll-sentinel">
+                  <span class="loading-more">Loading more… ({visibleCount} of {filtered.length})</span>
+                </div>
+              )}
+              {!hasMore && filtered.length > PAGE_SIZE && (
+                <div class="scroll-end">
+                  All {filtered.length} items shown
                 </div>
               )}
             </div>
