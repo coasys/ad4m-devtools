@@ -323,6 +323,22 @@ function createBridge(client?: any): AD4MDevTools {
       }
     },
 
+    async runSparqlQuery(perspectiveId: string, query: string): Promise<any> {
+      try {
+        const activeClient = getClient();
+        if (activeClient?.perspective?.byUUID) {
+          const proxy = await activeClient.perspective.byUUID(perspectiveId);
+          if (proxy?.querySparql) return await proxy.querySparql(query);
+        }
+        if (monitor?.sendRpc) {
+          return await monitor.sendRpc('perspective.querySparql', { uuid: perspectiveId, query });
+        }
+        return { error: 'No client or WS connection available' };
+      } catch (e: any) {
+        throw e;
+      }
+    },
+
     async sendRpc(method: string, params?: any): Promise<any> {
       if (monitor?.sendRpc) {
         return await monitor.sendRpc(method, params);

@@ -4,4 +4,5 @@ dist/
 *.tgz
 .env
 .ad4m
-test-results__pycache__/
+test-results
+__pycache__/

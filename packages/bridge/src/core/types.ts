@@ -195,6 +195,7 @@ export interface AD4MDevTools {
   getPerspectives(): Promise<any[]>;
   getAgentStatus(): Promise<any>;
   runQuery(perspectiveId: string, query: string): Promise<any>;
+  runSparqlQuery(perspectiveId: string, query: string): Promise<any>;
   sendRpc?(method: string, params?: any): Promise<any>;
   _client?: any;
   _Ad4mModel?: any;

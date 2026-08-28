@@ -22,14 +22,17 @@ function evalInPage(expr: string): Promise<any> {
   });
 }
 
-async function sendRpc(method: string, params: any): Promise<any> {
-  const paramsStr = JSON.stringify(params).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+// Run a SPARQL query via the bridge's runSparqlQuery.
+// Uses base64 encoding to avoid all string-escaping issues with multi-line SPARQL.
+async function runSparqlQuery(perspectiveId: string, query: string): Promise<any> {
+  const queryB64 = btoa(unescape(encodeURIComponent(query)));
   const result = await evalInPage(`
     (async () => {
       const dt = window.__AD4M_DEVTOOLS__;
-      if (!dt?.sendRpc) return JSON.stringify({ error: 'No sendRpc available' });
+      if (!dt?.runSparqlQuery) return JSON.stringify({ error: 'No runSparqlQuery available — bridge may need updating' });
       try {
-        const r = await dt.sendRpc('${method}', JSON.parse('${paramsStr}'));
+        const q = decodeURIComponent(escape(atob('${queryB64}')));
+        const r = await dt.runSparqlQuery('${perspectiveId}', q);
         return JSON.stringify({ data: r });
       } catch(e) {
         return JSON.stringify({ error: e.message || String(e) });
@@ -228,6 +231,7 @@ export function PerspectivesTab({ perspectives: passivePerspectives }: Props) {
   const [predicateStats, setPredicateStats] = useState<Array<{ uri: string; count: number }>>([]);
   const [classStats, setClassStats] = useState<Array<{ uri: string; count: number }>>([]);
   const [schemaLoading, setSchemaLoading] = useState(false);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
 
   // Show passively collected perspectives when available
   useEffect(() => {
@@ -283,18 +287,21 @@ export function PerspectivesTab({ perspectives: passivePerspectives }: Props) {
   const loadSchema = async () => {
     if (!selected) return;
     setSchemaLoading(true);
+    setSchemaError(null);
+    const errors: string[] = [];
     try {
       // Run all three queries in parallel
       const [shaclResult, predResult, classResult] = await Promise.all([
-        sendRpc('perspective.querySparql', { uuid: selected, query: SHACL_DISCOVERY_QUERY }).catch(() => null),
-        sendRpc('perspective.querySparql', { uuid: selected, query: PREDICATE_STATS_QUERY }).catch(() => null),
-        sendRpc('perspective.querySparql', { uuid: selected, query: CLASS_INSTANCES_QUERY }).catch(() => null),
+        runSparqlQuery(selected, SHACL_DISCOVERY_QUERY).catch((e: any) => { errors.push(`SHACL: ${e.message}`); return null; }),
+        runSparqlQuery(selected, PREDICATE_STATS_QUERY).catch((e: any) => { errors.push(`Predicates: ${e.message}`); return null; }),
+        runSparqlQuery(selected, CLASS_INSTANCES_QUERY).catch((e: any) => { errors.push(`Classes: ${e.message}`); return null; }),
       ]);
       setShaclShapes(parseShaclResults(shaclResult));
       setPredicateStats(parseStatsResults(predResult));
       setClassStats(parseStatsResults(classResult));
-    } catch {
-      // Queries may fail on perspectives without SPARQL support
+      if (errors.length > 0) setSchemaError(errors.join(' | '));
+    } catch (e: any) {
+      setSchemaError(e.message || 'Schema query failed');
     } finally {
       setSchemaLoading(false);
     }
@@ -340,6 +347,7 @@ export function PerspectivesTab({ perspectives: passivePerspectives }: Props) {
               setShaclShapes([]);
               setPredicateStats([]);
               setClassStats([]);
+              setSchemaError(null);
             }}
           >
             <span class="perspective-name">{p.name || 'Unnamed'}</span>
@@ -425,6 +433,10 @@ export function PerspectivesTab({ perspectives: passivePerspectives }: Props) {
               <button class="btn" onClick={loadSchema} disabled={schemaLoading}>
                 {schemaLoading ? 'Loading…' : '↻ Load Schema'}
               </button>
+
+              {schemaError && (
+                <div class="error-msg" style={{ margin: '8px 0' }}>{schemaError}</div>
+              )}
 
               {/* SHACL Shapes */}
               {shaclShapes.length > 0 && (
