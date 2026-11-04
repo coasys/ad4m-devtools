@@ -45,18 +45,6 @@
         "whisper_large_v3_turbo_quantized"
       ],
       "default": "whisper_small"
-    },
-    {
-      "id": "channelCount",
-      "type": "promptString",
-      "description": "Number of channels to create",
-      "default": "5"
-    },
-    {
-      "id": "messageCount",
-      "type": "promptString",
-      "description": "Messages per channel",
-      "default": "10000"
     }
   ],
   "tasks": [
@@ -180,24 +168,6 @@
       },
       "problemMatcher": [],
       "detail": "Start WE dev server with hot module reload"
-    },
-    {
-      "label": "AD4M: Populate Links (Flux Channels + Messages)",
-      "type": "shell",
-      "command": "${workspaceFolder}/scripts/ad4m-populate-links.sh",
-      "args": [
-        "--channels", "${input:channelCount}",
-        "--messages", "${input:messageCount}",
-        "--port", "${input:gqlPort}",
-        "--auth", "${input:adminCredential}"
-      ],
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "clear": true
-      },
-      "problemMatcher": [],
-      "detail": "Generate SHACL-compliant Channel/Message links into a running executor"
     }
   ]
 }
