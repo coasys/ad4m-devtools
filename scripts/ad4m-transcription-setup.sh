@@ -5,7 +5,7 @@
 # the weights by opening (then immediately closing) a transcription stream.
 #
 # Prerequisites: executor must be running with an initialised agent and a
-# logged-in user (i.e. run ad4m-flux-launch.sh first).
+# logged-in user.
 #
 # Usage:
 #   ad4m-transcription-setup.sh [options]

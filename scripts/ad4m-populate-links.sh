@@ -80,7 +80,7 @@ USER_JWT=$(python3 "$WS_RPC" --url "$WS_URL" --token "$AUTH" \
     "user.login" "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" 2>/dev/null \
     | python3 -c "import sys,json; r=json.load(sys.stdin); print(r if isinstance(r,str) else '')" 2>/dev/null) || USER_JWT=""
 USER_JWT=$(echo "$USER_JWT" | sed 's/^"//;s/"$//')
-[[ -n "$USER_JWT" ]] || err "Login failed for $EMAIL — is the user created? Run ad4m-flux-launch.sh first."
+[[ -n "$USER_JWT" ]] || err "Login failed for $EMAIL — is the user created? Create it with user.create first."
 ok "Authenticated (JWT ${#USER_JWT} chars)"
 
 # --- Calculate link count ---
