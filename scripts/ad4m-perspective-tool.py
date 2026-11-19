@@ -35,11 +35,12 @@ BATCH_SIZE = 500
 async def ws_rpc(url, auth, operation, params=None):
     """Make a single WebSocket RPC call."""
     ws_url = f"{url}?token={auth}" if "?" not in url else f"{url}&token={auth}"
-    async with websockets.connect(ws_url) as ws:
+    # A snapshot of a large perspective arrives as one frame of tens of MB.
+    async with websockets.connect(ws_url, max_size=None) as ws:
         req_id = str(uuid_mod.uuid4())
         msg = {"id": req_id, "type": operation, "params": params or {}}
         await ws.send(json.dumps(msg))
-        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
+        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=300))
         if "error" in resp and resp["error"] is not None:
             raise RuntimeError(f"WS RPC error ({operation}): {resp['error']}")
         return resp.get("result", resp)
@@ -52,7 +53,7 @@ async def ws_rpc_multi(url, auth, calls):
     Returns list of results in the same order.
     """
     ws_url = f"{url}?token={auth}" if "?" not in url else f"{url}&token={auth}"
-    async with websockets.connect(ws_url, max_size=50 * 1024 * 1024) as ws:
+    async with websockets.connect(ws_url, max_size=None) as ws:
         results = []
         for operation, params in calls:
             req_id = str(uuid_mod.uuid4())
@@ -120,7 +121,7 @@ def cmd_import(args):
 
     async def _batch_import():
         ws_url = f"{args.url}?token={args.auth}" if "?" not in args.url else f"{args.url}&token={args.auth}"
-        async with websockets.connect(ws_url, max_size=50 * 1024 * 1024) as ws:
+        async with websockets.connect(ws_url, max_size=None) as ws:
             async def rpc(op, params):
                 req_id = str(uuid_mod.uuid4())
                 await ws.send(json.dumps({"id": req_id, "type": op, "params": params}))
@@ -128,6 +129,33 @@ def cmd_import(args):
                 if "error" in resp and resp["error"] is not None:
                     raise RuntimeError(f"WS RPC error ({op}): {resp['error']}")
                 return resp.get("result", resp)
+
+            if all(l.get("author") and l.get("proof") for l in links):
+                # Exported link expressions keep their author, timestamp and
+                # proof, so the copy shows who wrote what and when. They skip
+                # the batch: commitBatch signs what it commits as the caller.
+                # Local: an import never reaches a link language.
+                for i in range(0, total, BATCH_SIZE):
+                    chunk = links[i:i + BATCH_SIZE]
+                    for l in chunk:
+                        await ws.send(json.dumps({
+                            "id": str(uuid_mod.uuid4()),
+                            "type": "perspective.addLinkExpression",
+                            "params": {
+                                "uuid": p_uuid,
+                                "link": {k: l[k] for k in ("author", "data", "proof", "timestamp")},
+                                "status": "LOCAL",
+                            },
+                        }))
+                    for _ in chunk:
+                        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=120))
+                        if resp.get("error") is not None:
+                            raise RuntimeError(f"WS RPC error (perspective.addLinkExpression): {resp['error']}")
+                    done = min(i + BATCH_SIZE, total)
+                    elapsed = time.time() - start
+                    rate = done / elapsed if elapsed > 0 else 0
+                    print(f"\r  Added {done}/{total} links ({rate:.0f} links/s)", end="", file=sys.stderr)
+                return
 
             # Start deferred batch
             batch_id = await rpc("perspective.createBatch", {"uuid": p_uuid})
